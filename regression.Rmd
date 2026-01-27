@@ -1,0 +1,1337 @@
+---
+title: "Mila's fun with regression!"
+author: ''
+date: "`r Sys.Date()`"
+output:
+  html_document: 
+    mathjax: "default"
+  pdf_document: default
+---
+  
+```{r setup, include=FALSE}
+library(RColorBrewer)
+library(forecast)
+library(plotly)
+
+cmp1 <- brewer.pal(7,"Set1")
+cmp2 <- brewer.pal(7,"Pastel1")
+
+# Global options for all chunks
+knitr::opts_chunk$set(
+  echo = FALSE,          # Hide code by default
+  warning = FALSE,       # Hide warnings
+  message = FALSE,       # Hide messages
+  fig.width = 5,         # Base width in inches
+  fig.asp = 0.618,       # Golden ratio (height/width)
+  fig.align = "center"   # Center plots on the page
+  # dev = "png", 
+  # dev.args = list(type = "cairo-png"),
+  # antialias = "subpixel"
+)
+```
+
+# Basics: what are observations and forecasts?
+
+First, we need to stop thinking data as "points". They are not the outcome of a deterministic process, but they include randomness. If they are random, any forecast has to depict this randomness.
+
+```{r}
+# Visualise what data are
+set.seed(0127)    # Lock the random number generator
+sigma <- 1        # Standard deviation
+n <- 10           # Sample size
+# Produce a random walk time series
+y <- cumsum(rnorm(n,mean=0,sd=1))
+# Start plot
+{
+  par(mar=c(4,4,1,1))
+  plot(y,pch=20,type="o",xlab="",ylab="",ylim=c(min(y)-2,max(y)+2),xlim=c(1,length(y)+2))
+  title(xlab="Observation",line=2.5,ylab="y")
+  text(n/2,max(y)+2.1,"Training data",pos=3,xpd=NA)
+  text(n+1.5,max(y)+2.1,"Forecast",pos=3,xpd=NA)
+  # Plot the forecast region
+  abline(v=n+0.5,lty=2)
+  text(n+1.5,mean(y),"?",col=cmp1[1],cex=2)
+}
+```
+
+This is a more honest representation of the data, and it already gives us a region for the forecast. These distributions depict the probability of where the next observation will be. The expectation is that it will be where the probability is at its maximum (centre of the normal distirbution), but real data have other plans.
+
+```{r}
+{
+  par(mar=c(4,4,1,1))
+  plot(y,pch=20,type="o",xlab="",ylab="",ylim=c(min(y)-2,max(y)+2),xlim=c(1,length(y)+2))
+  title(xlab="Observation",line=2.5,ylab="y")
+  text(n/2,max(y)+2.1,"Training data",pos=3,xpd=NA)
+  text(n+1.5,max(y)+2.1,"Forecast",pos=3,xpd=NA)
+  # Plot normal distributions over each point at the correct location
+  for (i in 2:n){
+    # The location of the next point is the previous point +´randomness (random walk)
+    ySeq <- seq(y[i-1]-3*sigma,y[i-1]+3*sigma,length.out=100)
+    # Caluclate the normal distribution density - add scaling to make the plot clear
+    densityX <- dnorm(ySeq,mean=y[i-1],sd = sigma)*1.5
+    # Plot it
+    polygon(i+densityX,ySeq,col=cmp2[2],border=cmp1[2])
+    # Add mean line
+    lines(c(i,i+max(densityX)),rep(y[i-1],2),col=cmp1[1],lty=1)
+    lines(c(i-1,i),rep(c(y[i-1]),2),lty=2)
+  }
+  # Add centre of distributions - why is it there? Because there is 
+  # no additional structure in the series. Best guess for the future is the last value.
+  # Technically: forecast = previous forecast + error, but the error is unknwon in the
+  # the future, so put that to zero, and you get new forecast = old forecast. This
+  # is true because we assumed/know there is no additional structure
+  lines(y,type="o",pch=20)
+  points(c(NA,y[-length(y)]),col=cmp1[1],pch=20)
+  # Plot the forecast region
+  abline(v=n+0.5,lty=2)
+  # Create future distribution
+  ySeq <- seq(y[i]-3*sigma,y[i]+3*sigma,length.out=100)
+  densityX <- dnorm(ySeq,mean=y[i],sd = sigma)*1.5
+  polygon(n+1+densityX,ySeq,col=cmp2[1],border=cmp1[1])
+}
+```
+
+In this simple case what should our forecast be? Let's think of a few cases. Suppose we forecast in the middle (where the probability is maximised - called "expectation" in statistics), above it, or below it.
+
+```{r}
+{
+  par(mar=c(4,4,1,1))
+  # This is what will happen in the test set - a new random draw. 
+  set.seed(1)
+  ynew <- y[n] + rnorm(1,mean=0,sd=sigma)
+  # Restart the plot
+  plot(y,pch=20,type="o",xlab="",ylab="",ylim=c(min(y)-2,max(y)+2),xlim=c(1,length(y)+2))
+  title(xlab="Observation",line=2.5,ylab="y")
+  text(n/2,max(y)+2.1,"Training data",pos=3,xpd=NA)
+  text(n+1.5,max(y)+2.1,"Forecast",pos=3,xpd=NA)
+  
+  # Create future distribution
+  ySeq <- seq(y[i]-3*sigma,y[i]+3*sigma,length.out=100)
+  densityX <- dnorm(ySeq,mean=y[i],sd = sigma)*1.5
+  polygon(n+1+densityX,ySeq,col="lightgrey",border="grey")
+  # Plot new observation
+  points(n+1,ynew,col="black",pch=20)
+  lines(c(n+1,n+2.5),rep(ynew,2),lty=2,col="black")
+  
+  # Plot the forecast region
+  abline(v=n+0.5,lty=2)
+  
+  # Plot possible forecasts
+  # Middle
+  lines(c(n+1,n+2.5),rep(y[n],2),col=cmp1[2],lwd=2)
+  lines(rep(n+1+0.5,2),c(y[n],ynew),col=cmp1[1],lwd=2)
+  # Above
+  lines(c(n+1,n+2.5),rep(y[n]+1,2),col=cmp1[3],lwd=2)
+  lines(rep(n+1+0.875,2),c(y[n]+1,ynew),col=cmp1[1],lwd=2)
+  # Below
+  lines(c(n+1,n+2.5),rep(y[n]-1,2),col=cmp1[4],lwd=2)
+  lines(rep(n+1+1.25,2),c(y[n]-1,ynew),col=cmp1[1],lwd=2)
+  legend("topleft",c("Middle","Above","Below","Error"),col=cmp1[c(2,3,4,1)],lwd=2,bty="n")
+  
+}
+```
+
+When will the forecast error be smaller? We cannot answer this for a future unknown observation, but we can asnwer it on average for "all" future observations. Let's count the errors if we would repeat the process 1000 times, i.e., forecast in the middle, above and below. (Most of the fancy statistics is just that: throw the ball against the wall infinite times and see what happens.)
+
+```{r}
+par(mar=c(4,4,1,1))
+# We simulate 100 draws
+set.seed(1)
+ynew <- y[n] + rnorm(1000,mean=0,sd=sigma)
+# Produce a matrix with "forecasts"
+yhat <- cbind(rep(y[n],1000),rep(y[n]+1,1000),rep(y[n]-1,1000))
+# Calculate errors
+err <- cbind(ynew,ynew,ynew) - yhat
+colnames(err) <- c("Middle","Above","Below")
+# Plot it as boxplots
+boxplot(err,col=cmp2[2])
+points(1:3,colMeans(err),col=cmp1[1],pch=20,cex=2)
+abline(h=0,lty=2,col="black")
+title(ylab="Error",line=2.5)
+legend("bottomright","Mean",col=cmp1[1],pch=20,pt.cex=2,bty="n")
+```
+Looking at raw errors rarely helps. **There are two bits of information that we are really interested** in, first, the **location of the errors, called bias**. Am I over- or under-forecasting on average? I want to have as close to zero bias as possible. This is simply the mean of the errors (the red dots in the boxplots). Second, **the variance, which we often understand as accuracy**. This is often the root mean squared error. We square the error because we do not care if we over- or under-forecast (remove the +/-), and take the square root to return everything in the same scale. Recall from your favourite subject at school (obviously I'm talking about physics) that we need to carry the units with our equations. If the time series is in SEK, the forecast is in SEK, the errors are in SEK, but the mean sqaured errors (MSE) are in SEK^2. The root (RMSE) is again in SEK. 
+
+```{r}
+par(mar=c(4,4,1,1))
+boxplot(err^2,col=cmp2[2])
+rmse <- sqrt(colMeans(err^2))
+title(ylab="Error^2",line=2.5)
+for (i in 1:3){
+  text(i,21,paste0("RMSE:",round(rmse[i],2)),col=cmp1[1])
+}
+```
+What am I trying to get to?
+
+* **Model predictions**, for time series or not, are the expectations of the predictive distirbution. Simply put: the most likely outcome. In most cases, that **is the mean**. 
+
+* **If we say the model prediction is X, that is incomplete**. We know that exact value will never be what we forecasted because of randomness/noise.
+
+* **The complete forecasts is X +/- some interval** to represent the uncertainty (or better yet, the complete predictive distribution).
+
+Observe two things. 
+* The boxplot of the errors (not the square errors) gives us already the interval for the forecast.It really says your forecast is where you thought it would be +/i these errors. 
+# The error^2 are just the variance, a away to quantify that interval is the variance.
+
+And finally:
+* The formula for the variance is 1/n sum((x-mean(X))^2). The MSE (mean squared error) is 1/n sum(x^2). The only difference is that the mean(x) is not removed in the case of MSE. Why? Because the "correct forecast is the unbiased forecast: mean(error) = 0. This will have some very useful implications later on. 
+
+# Where does uncertainty come from? 
+Is is all the information we do not know or our misunderstandings about the system we are trying to model. Suppose you're running an ice cream store and you have 5 customers, who may buy from 0 to 4 ice creams with equal probability (so, 1/5 options = 20% probability). The middle of 0 to 4 is (0+4)/2 = 2. You have 5 customers, so a simple forecast is 2*5 = 10.
+Here are your sales for a single day.
+
+```{r, fig.width = 10}
+set.seed(12)
+days <- 1
+x <- matrix(sample(0:4,5*days,replace=TRUE),ncol=5,byrow=TRUE)
+y <- sum(x)
+layout(rbind(c(1,2,3,4,5),rep(6,5)))
+par(mar=c(4,4,2,1))
+for(i in 1:5){
+  hist(x[,i],breaks=(0:5)-0.5,main="",xlab="",ylab="",col=cmp2[2],prob=TRUE,ylim=c(0,1))
+  title(xlab="Ice creams",ylab="Probability",line=2.5)
+  if (i != 5){
+    title(main=paste0("Customer ",i),line=1)
+  } else {
+    title(main=paste0("Customer ",i, " (Me!)"),line=1)
+  }
+  abline(h=0.2,col=cmp1[1],lty=2)
+}
+# Sales view
+hist(rowSums(x),breaks=(0:20)-0.5,main="",xlab="",ylab="",col=cmp2[2],prob=TRUE)
+abline(v=10,col=cmp1[1],lwd=2)
+text(10,par()$usr[4]*0.95,"Forecast   ",pos=2,col=cmp1[1])
+title(main="Sales",line=1)
+title(xlab="Ice creams",ylab="Probability",line=2.5)
+  
+```
+
+For 20 days
+
+```{r, fig.width = 10}
+set.seed(12)
+days <- 20
+x <- matrix(sample(0:4,5*days,replace=TRUE),ncol=5,byrow=TRUE)
+y <- sum(x)
+layout(rbind(c(1,2,3,4,5),rep(6,5)))
+par(mar=c(4,4,2,1))
+for(i in 1:5){
+  hist(x[,i],breaks=(0:5)-0.5,main="",xlab="",ylab="",col=cmp2[2],prob=TRUE,ylim=c(0,1))
+  title(xlab="Ice creams",ylab="Probability",line=2.5)
+  title(main=paste0("Customer ",i),line=1)
+  abline(h=0.2,col=cmp1[1],lty=2)
+}
+# Sales view
+hist(rowSums(x),breaks=(0:20)-0.5,main="",xlab="",ylab="",col=cmp2[2],prob=TRUE)
+abline(v=10,col=cmp1[1],lwd=2)
+text(10,par()$usr[4]*0.95,"      Forecast",pos=4,col=cmp1[1])
+title(main="Sales",line=1)
+title(xlab="Ice creams",ylab="Probability",line=2.5)
+  
+```
+
+What do we see here? The probability of purchase for each customers starts to get closer to the 20% for each 0 to 4 ice creams. On the aggregate level (your sales) the forecast of 10 is sometimes spot on, some times under- and sometimes over-forecasting. 
+
+For 1000 days we get
+
+```{r, fig.width = 10}
+set.seed(12)
+days <- 1000
+x <- matrix(sample(0:4,5*days,replace=TRUE),ncol=5,byrow=TRUE)
+y <- sum(x)
+layout(rbind(c(1,2,3,4,5),rep(6,5)))
+par(mar=c(4,4,2,1))
+for(i in 1:5){
+  hist(x[,i],breaks=(0:5)-0.5,main="",xlab="",ylab="",col=cmp2[2],prob=TRUE,ylim=c(0,1))
+  title(xlab="Ice creams",ylab="Probability",line=2.5)
+  title(main=paste0("Customer ",i),line=1)
+  abline(h=0.2,col=cmp1[1],lty=2)
+}
+# Sales view
+hist(rowSums(x),breaks=(0:20)-0.5,main="",xlab="",ylab="",col=cmp2[2],prob=TRUE)
+abline(v=10,col=cmp1[1],lwd=2)
+text(10,par()$usr[4]*0.95,"      Forecast",pos=4,col=cmp1[1])
+title(main="Sales",line=1)
+title(xlab="Ice creams",ylab="Probability",line=2.5)
+densityY <- dnorm(seq(0,20,length.out=1000),mean=10,sd=sd(rowSums(x)))
+lines(seq(0,20,length.out=1000),densityY,col=cmp1[1],lwd=2)
+  
+```
+
+The sales end up being a normal distribution with a meam of 10, what we expected from our simplistic calcuclation. Why is it a normal distribution? This is what the Central Limit Theorem tell us to expect the distribution of the sums will eventually become normal. So we do not know why each customer buys the number of ice cream they buy, but when we examine the aggregate sales, the problem is much simpler to model. It is just a normal distribution. The forecast is its mean, and its uncertainty is its variance. When we "modelled" the sales we did not need any knowledge of how consumers behave. The sample mean and variance are enough.
+
+This is core in any predicitve modelling. We do not need to know too many details. Out task is to simply estimate a mean and a variance. The mean here was very easy to estimate because it has no structure/dynamics (it does not change over time - for instance people who do not know the real joy in life consume ice creams seasonaly, waiting for warm weather - insane!) The mean then is more complex to calculate. The same logic applied for the variance. 
+
+We need a term for that: **conditional mean** and **conditional variance**. Conditional on what? On all information that we have up to this point. So that will typically be time and any other explanatory variables we have. 
+
+## A more realistic example (for when we reach ARIMAs)!
+
+Here is a forecast:
+```{r}
+library(forecast)
+y <- AirPassengers
+yTrn <- ts(y[1:(length(y)-12)],frequency=frequency(y),start=start(y))
+yTst <- ts(y[(length(y)-11):length(y)],frequency=frequency(y),end=end(y))
+fit <-auto.arima(yTrn)
+frc <- forecast(fit,h=12)
+par(mar=c(4,4,1,1),mfrow=c(1,1))
+ts.plot(yTrn,frc$mean,col=c("black",cmp1[1]),lwd=c(1,2),xlab="",ylab="")
+title(xlab="Year",ylab="000s Passengers",line=2.5)
+legend("topleft",c("Data","Forecast"),col=c("black",cmp1[1]),lty=1,bty="n")
+```
+
+This forecast is incomplete. It only provides us with the conditional mean for the future months. Note how the forecasts follows the seasonal pattern. This is not the mean, it is the conditional on the time period. For example, the mean is different for January and for June. 
+
+Here is the forecast against what happened - I zoom in the last part..
+
+```{r}
+library(forecast)
+y <- AirPassengers
+yTrn <- ts(y[1:(length(y)-12)],frequency=frequency(y),start=start(y))
+yTst <- ts(y[(length(y)-11):length(y)],frequency=frequency(y),end=end(y))
+fit <-auto.arima(yTrn)
+frc <- forecast(fit,h=12)
+par(mar=c(4,4,1,1),mfrow=c(1,1))
+ts.plot(window(yTrn,start=1958),frc$mean,yTst,col=c("black",cmp1[1],"black"),lwd=c(1,2),xlab="",ylab="")
+title(xlab="Year",ylab="000s Passengers",line=2.5)
+legend("topleft",c("Data","Forecast"),col=c("black",cmp1[1]),lty=1,bty="n")
+```
+
+We should never expect the forecast to be spot on what will happen. Remember, the noise is unforecastable, it is the information we cannot know. Evem if here the forecast is pretty close, it still remains a lucky guess, and we do not have any insight in how confident is the model in its forecast. 
+
+Here is the complete picture with the point forecast (the conditional mean) and its uncertainty (which depends on the conditional variance). The uncertainty interval (technically the prediction interval) contains the actuals. So it is not about the point prediction (red line) matching the actuals, but rather the actuals being contained in the intervals. **Even if we had perfect knowledge, and our model would be perfect, we would still not be able to get the actuals spot on. Why? Because noise is unforecastable**.
+
+```{r}
+library(forecast)
+y <- AirPassengers
+yTrn <- ts(y[1:(length(y)-12)],frequency=frequency(y),start=start(y))
+yTst <- ts(y[(length(y)-11):length(y)],frequency=frequency(y),end=end(y))
+fit <-auto.arima(yTrn)
+frc <- forecast(fit,h=12)
+par(mar=c(4,4,1,1),mfrow=c(1,1))
+plot(frc,xlim=c(1958,1961),ylim=c(300,620),main="")
+lines(frc$mean,col=cmp1[1],lwd=2)
+lines(yTst)
+title(xlab="Year",ylab="000s Passengers",line=2.5)
+legend("topleft",c("Data","Forecast"),col=c("black",cmp1[1]),lty=1,bty="n")
+```
+
+If we look carefully at the plot, the black line, what eventually happened is not always contained in the intervals. The plotted intervals at their widest are the so called 95% prediction intervals. This means that we expect 1 out of 20 times (5% probability) the actual data to be outside the intervals. This is assuming that everything is calculated correctly (our conditional means and variances are good approximations of what is happening with the data).**The more accurate a model is, the narrower the intervals, and they will more fairly cover the probabilities they claim they do**.
+
+As an example, here is a terrible forecast
+```{r}
+library(forecast)
+y <- AirPassengers
+yTrn <- ts(y[1:(length(y)-12)],frequency=frequency(y),start=start(y))
+yTst <- ts(y[(length(y)-11):length(y)],frequency=frequency(y),end=end(y))
+fit <-Arima(yTrn,order=c(0,1,0),include.drift=TRUE)
+frc <- forecast(fit,h=12)
+par(mar=c(4,4,1,1),mfrow=c(1,1))
+plot(frc,xlim=c(1958,1961),ylim=c(300,620),main="")
+lines(frc$mean,col=cmp1[1],lwd=2)
+lines(yTst)
+title(xlab="Year",ylab="000s Passengers",line=2.5)
+legend("topleft",c("Data","Forecast"),col=c("black",cmp1[1]),lty=1,bty="n")
+box()
+```
+
+In principle, this is still a usable forecast, but its uncertainty is very high. If we would translate this forecast into a decision, we would need to account for a ton of risk. For example, with the good forecast, given the uncertainty we should plan for +/- one more trip to carry all the passengers. With the nad forecast we would need to plan for +/- hundreds or trips to account for the uncertainty in the passenger forecast. Planning for all this contigency is too expensive! 
+
+Note that the prediction intervals expand over time. What is happening there we will see it in detail when we reach ARIMA models, but simply put, we accumulate uncertainty from each previous forecast period. This sentence statistically says: **your forecast errors are correlated, and this correlation inflates the uncertainty**. This sentence will be increasingly annoying as we understand more the mathematical side of modelling. 
+
+Now we are ready for regression! 
+
+# Regression!
+
+Regression is the most fundamental tool we have in statistics. A massive class of modelling problems is a regression. Most of the stuff you will see in your stats related modules or the implicit models in management theories/questions will be a regression. From simple statistical tests, to complex language models, it is just a regression with more or fewer tricks. If you master regression, everything becomes very very easy.
+
+Regression, at its basics, tries to tell you how strong is the observed connection between variables. **It claims nothing on the causal structure of the target variable**. This is a very common mistake in how people use regression, they find a connection, and then overreach by claiming that some causality is uncovered. This is not what regression does, and is epistimologically flawed to make these claims. (A ton of management, economics, biology, medicine, psychology papers are unfortunately just flawed, by misunderstanding or overclaiming the regression output. This is not a rant, it is more of a: be critical when people suggest that a model says something - they often just try to dress a narrative with numbers.)
+
+## Bivariate linear regression
+
+The model is:
+$$ y_t = \alpha + \beta x_t + \varepsilon_t$$
+where $y_t$ is the target in period $t$, $\alpha$ is a constant (sometimes called intercept), $\beta$ is the coefficient of the independent (or regressor or covariate) variable $x_t$ and $\varepsilon_t$ is the innovation term. Innovation term is a funny way to say noise. Strictly speaking innovation term implies that novel information that is happening because of the stochastic nature of the data (e.g., how many ice creams I am going to eat today, from the seller's perspective). The innovation term is not the same as the residuals or the error. I will return to this point latter. For now think of $\varepsilon_t$ as the noise. Why is it in the equation? This is what will become our prediction intervals. It will not affect the point prediction (the expectation).
+
+The bivariate regression is linear - what does this mean? As the regressor changes, the left hand side, $y_t$, will change additively as the coefficients suggest. Let me illustrate the point a bit better. This is linear
+$$ y_t = \alpha + \beta x_t + \varepsilon_t$$
+This is linear as well:
+$$ y_t = \alpha + \beta x_t^2 + \varepsilon_t$$
+The regressor changes by $beta$ times whatever value $x_t^2$ takes, the change is defined by $\beta$ and it is additive $+\beta (x_t^2)$. The model does not know there is an $x_t^2$. I could just as well write $z_t = x_t^2$ and $ y_t = \alpha + \beta z_t + \varepsilon_t$. These different write ups of the model are equivalent and all linear. Note how the coefficients interacting with the data:
+
+$$y_t = \alpha + \beta \times something + \varepsilon_t$$
+What "something" is none of the model's business. Here is a nonlinear example for contrast:
+$$ y_t = \alpha + x_t^\beta + \varepsilon_t$$
+Notice where is the coefficient $\beta$, if $x_t$ changes by 1, the change of $y_t$ is no longer additive by $\beta \times 1$ but it is some exponential. Why am I making all this discussion? People like to say linear models are straight lines, but they are not necessarily. The relationship between $y_t$ and $x_t$ may be nonlinear. The regression remains linear because it is a linear combination of its parameters (a linear combination of $\alpha \times 1$ and $\beta \times x^{whatever}$). We will need this later, but also in case you plot a regression and it does not look like a straight line, this is why. 
+
+Notation tip: When we refer to some unknown (often implying the true parameter that generates the data) we use Greek letters. When we refer to estimated parameters we either use "hats" or English letters: $\hat{\beta}$ or $b$ and quite often people use both just in case $\hat{b}$!
+
+You have probably heard that **correlation is not causation**. You can also add to that **regression is not causation**. We want to make sure relationships are linear (or look linear-ish) before we start building our regression. Now here is where textbooks and many people get a bit confused. **People say: first plot the data** - I say **Meh, good luck spotting linearity with that!**. Here is why:
+
+```{r, fig.width = 7, fig.asp = 0.4}
+par(mfrow=c(1,2),mar=c(4,4,2,1))
+x <- seq(-5,5)
+set.seed(1)
+y1 <- 1 + 2*x + rnorm(length(x),sd=5)
+y2 <- 1 + 2*x^2 + rnorm(length(x),sd=5)
+
+plot(x,y1,pch=20,xlab="",ylab="")
+lm1 <- lm(y1~x)
+lines(x,lm1$fitted,col=cmp1[1])
+title(xlab=expression(x),ylab=expression(y),line=2.5)
+title(main=bquote("Fitted: " ~ y == .(round(coef(lm1)[1], 2)) + .(round(coef(lm1)[2], 2)) * x))
+
+plot(x,y2,pch=20,xlab="",ylab="")
+z <- x^2
+lm2 <- lm(y2~z)
+lines(x,lm2$fitted,col=cmp1[1])
+title(xlab=expression(x^2),ylab=expression(y),line=2.5)
+title(main=bquote("Fitted: " ~ y == .(round(coef(lm2)[1], 2)) + .(round(coef(lm2)[2], 2)) * x^2))
+
+```
+
+Both are linear regressions. It has to be linear in the coefficients, not in the connection with $x^2$. We can check whether there is a leftover non-linearity in the residuals of the regression. Below are the residuals $e_t = y_t - x_t$ of the previous regressions.
+
+```{r, fig.width = 7, fig.asp = 0.4}
+par(mfrow=c(1,2),mar=c(4,4,2,1))
+
+err <- y1 - lm1$fitted
+plot(x,err,pch=20,xlab="",ylab="")
+title(xlab=expression(x),ylab=expression(y - hat(y)),line=2.5)
+abline(h=0)
+title(main=bquote("Fitted: " ~ y == .(round(coef(lm1)[1], 2)) + .(round(coef(lm1)[2], 2)) * x))
+
+err <- y2 - lm2$fitted
+plot(z,err,pch=20,xlab="",ylab="")
+title(xlab=expression(x^2),ylab=expression(y - hat(y)),line=2.5)
+abline(h=0)
+title(main=bquote("Fitted: " ~ y == .(round(coef(lm2)[1], 2)) + .(round(coef(lm2)[2], 2)) * x^2))
+
+```
+
+I plot the dependent variable versus the errors. If there was some nonlinear information leftover in the $\hat{\beta} \times$ regressor it would show up here. For example in the model $ y_t = \alpha + \beta x_t^2 + \varepsilon_t$ let's ignore the quadratic ($x^2$) and fit it with just $x$:
+
+```{r, fig.width = 7, fig.asp = 0.4}
+par(mfrow=c(1,2),mar=c(4,4,2,1))
+
+plot(x,y2,pch=20,xlab="",ylab="")
+lm3 <- lm(y2~x)
+lines(x,lm3$fitted,col=cmp1[1])
+title(xlab=expression(x^2),ylab=expression(y),line=2.5)
+title(main=bquote("Fitted: " ~ y == .(round(coef(lm3)[1], 2)) + .(round(coef(lm3)[2], 2)) * x))
+
+err <- y2 - lm3$fitted
+plot(x,err,pch=20,xlab="",ylab="")
+title(xlab=expression(x),ylab=expression(y - hat(y)),line=2.5)
+abline(h=0)
+title(main=bquote("Fitted: " ~ y == .(round(coef(lm1)[1], 2)) + .(round(coef(lm1)[2], 2)) * x))
+
+```
+
+There is a clear nonlinearity left in the residuals. This hint to us that our model is not great, and we should try to build a better regression. (We could start by transforming $x$, but these is nothing stopping us from transforming $y$.)
+
+**Do not take this as: we do not need to plot the data!** We still need to plot the data to get **an idea of what we are dealing with**, and spot **outliers** and **structural breaks**. We can spot all these from the residuals, but it is often faster to start from just plotting our data. 
+
+We have three regressions from the examples above. Let's see what the estimated model tell us:
+
+```{r}
+print(summary(lm1))
+```
+
+First. residuals rows: very uninformative! Just plot them. The coefficients part is where we get the most interesting information. Let's understand what we are told there. We pick the line of $x$ first. 
+* The coefficient is: $\hat{\beta}_{x} = 2.6$. The real information here is that it is positive. The size of the coefficient can be misleading. We return to this when we look at multiple regression. 
+* The standard error is: $\hat{\sigma}_{\beta_x} = 0.39$. What does this mean? This standard error connects to the idea of standard deviation. Standard deviation of what? Of the errors in estimating the coefficient size. Imagine I could ask for a different set of $y_t$ (and $x_t$) values from the same data generating process. Because of the noise $\varepsilon_t$ the estimates will be somewhat different. The more the noise, or the less the data, the higher the differences. If I would collect all these estimates I would get a distributon of $\hat{\beta}_{x}$, that distribution has some standard deviation. This is what the standard error is. Much like the discussion about the forecasts before, the narrower this is, the more precise is the estimate and the less uncertainty is associated with it. The calculation of the standard error is in fact rather different, based on analytical formulas, but the intuition is what we have here. 
+* If the noise in the data can change the values of the coefficients, then a reasonable question is: how do we know that the coefficient is correctly estimated? In general we do not know the correct value, so we cannot meaningfully do the calculation $\beta - \hat{\beta}$. This is really what we would like to calculate. Instead, we at least can ask, do we have enough evidence that $\beta \neq 0$? We want to know that we did not pick up a random $\beta$ by overinterpretting the noise in the data. We will do a t-test here. The logic is: I have the value for $| \hat{\beta} - 0 |$, is this too small to be unsure that $\beta$ exists? (exists means $\beta \neq 0$). Before I said the size of the coefficient can be misleading. We want to normalise it by something. We normalise it by the size of its estimation errors. WHy? Remember, the argument about units before. The size of the coefficient has some units (it is really the scale we are interested, the coefficient strictly speaking is unitless), the same is true for the size of the standard errors. If we divide these two we get a clean number (in scale actually! we get a normalised distribution). This is what the t-statistic (t value above) is: $(\hat{\beta} - 0)/\hat{\sigma}_{\beta_x} = 6.46$. What do we do with that number? It is a t-test, so we look what this value corresponds to on a t-student distribution and get the p-value. Heuristically speaking values about $|2|$ corresponds to 5%. What is this percentage telling us? Here the p-value is 0.000117. This is the probability that $\hat{\beta} = 0$ because of the sampling uncertainty- It tells us nothing about $x$ being in the model or not!* We cannot simply say, so $x$ has no impact. We can only say that we wasted our time (and data) estimating $\hat{\beta}$ for this sample of $y_t$. Visually what we are saying is:
+
+```{r}
+temp <- summary(lm1)
+betaHat <- temp$coefficients[2,1]
+se <- temp$coefficients[2,2]
+df <- temp$df[2]
+
+xmin <- betaHat-8*se
+xmax <- betaHat+8*se
+x <- seq(xmin, xmax, length=1000)
+y <- (1/se)*dt((sort(x)-betaHat)/se,df=df)
+
+par(mar=c(4,4,1,1))
+plot(x, y, lwd=2, xlab="",ylab="",col=cmp1[2])
+abline(v=betaHat,col=cmp1[2],lty=2,lwd=2)
+text(betaHat, max(y)*0.9, paste("    Estimate =", round(betaHat,2)), pos=4, col=cmp1[2])
+abline(v=0,col=cmp1[1],lwd=2)
+title(xlab="Coefficient value",ylab="t-student density",line=2.5)
+
+```
+
+There is only a tiny chance for the estimated coefficient to be zero (the probability that the p-value gives).
+
+For the sake of clarity, let's repeat the same with the third regression where we fit a straight line on the $x^2$ data. 
+```{r}
+temp <- summary(lm3)
+betaHat <- temp$coefficients[2,1]
+se <- temp$coefficients[2,2]
+df <- temp$df[2]
+
+xmin <- betaHat-8*se
+xmax <- betaHat+8*se
+x <- seq(xmin, xmax, length=1000)
+y <- (1/se)*dt((sort(x)-betaHat)/se,df=df)
+
+par(mar=c(4,4,1,1))
+plot(x, y, lwd=2, xlab="",ylab="",col=cmp1[2])
+abline(v=betaHat,col=cmp1[2],lty=2,lwd=2)
+text(betaHat, max(y)*0.9, paste("    Estimate =", round(betaHat,2)), pos=4, col=cmp1[2])
+abline(v=0,col=cmp1[1],lwd=2)
+title(xlab="Coefficient value",ylab="t-student density",line=2.5)
+
+xtail <- seq(xmin, 0, length=100)
+ytail <- (1/se)*dt((xtail-betaHat)/se,df=df)
+polygon(c(xtail, rev(xtail)),c(ytail, rep(0, 100)),col=cmp2[1], border=NA)
+text(-10,0.1, paste0("p-value = ",round(temp$coefficients[2,4],3)),col=cmp1[1])
+
+```
+
+Here we have serious doubts that the estimation of the coefficient is reliable. (Strictly speaking, the visualisation here is a bit misleading, as the test is two-sided and not one side. Here I plotted the whole p-value on one side. This is because I changed the perspective of the test from the 0, as it assumes $\beta = 0$ to be centred around the estimated coefficient.)
+
+Back to the previous output:
+```{r}
+print(summary(lm1))
+```
+
+What is a good p-value to test against? If we do our science correctly, there is none! We have to caclulate the correct p-value from our experiment (what are we testing, how many participants, etc.). This is very rarely done, so people have kept a dogmatic adherence to 5%. Why 5%? Why not 5.1%? Because people like crisp rules, but there is none :) 
+
+Personally I ignore marginal p-values. More importantly, p-values do not tell us anything about the variable having any causal connection with the target, they only make a statement about our estimation. When we have an experimental design build on a theory driven hypothesis, this may be valid. When we do data mining, i.e., we try to build a bunch of models to figure out what is going on with our data, then we have no theory driven hypothesis, and the p-values do not allow us to conclude that variables should not be in the model. The statistical rationale for saying we can remove the variable is very different. Every coefficient we estimate uses data. If we know a coefficient is not well estimated, then we throw it away, and re-estimate the model with "more available data". *Personally, I very rarely look at p-values, and I always teach to not use them at all". The chances of misusing them are much higher than getting anything useful out of them. They also have a fallacy in their maths, but I will return to that later. 
+
+Recall that **predictions are uncertain**. The width of the uncertainty is based on a standard deviation or variance calculation. For regression models this is the **residual standard error**. 
+
+I mentioned above that any coefficients uses up data. This is what the **degrees of freedom** is trying to tell us. The lower the number the less reliable the estimation is. Here the degrees are 9. I used 11 data points, I wasted one for the constant, and one for the coefficient of $x$. I am left with 9 degrees of freedom. In so simple models there is little more to say about this here. Unless we go into the analytical side of modelling, this is probably the last you will hear about this. 
+
+* **Multiple-R squared**: it says how much percent of your data is explained by your model. The remaining up to 100% is currently left in the errors of the model. **Often people try to maximise their $R^2$ - this is very wrong!** Let us understand why. As we show in the first plots, every **observation = sturcture + noise**. How much is the noise is unknown, but we know that our data has noise. If the $R^2$ becomes 100% that means that the model has explained the observations fully, which means it has explained the noise. But recall that the noise is the information we cannot recover, so it is impossible to predict it or model it. If we try to tweak our regression to maximise $R^2$ all we are doing is overfit to the noise in the data and get a silly model as an output. That model will try to second-guess randomness, rather than try to find a reliable conditional expectation. In our ice cream example, that would be the same as every day moving your forecast around from 0 to 20, just because. **The R^2 can only tells us how much of the data remains unexplained so that we do not overclaim with our model. It cannot be used as a statistic to optimise during model building**. 
+
+* **Adjusted R-Squared**: This is obsolete, so we have stopped using it. It is there only to confuse colleagues who are forced to teach statistics without having had the chance to study it, and to really confuse students. Some people will claim that this is useful for multiple regression. When we reach there, we will see why this is not the case. 
+
+* **F-statistic**: This is like a p-value for the whole regression. Is the whole regression, all the coefficients together well estimated? As using p-values for individual coefficients is misleading, so is using the F-statistic in the contexts we use regression with business data. 
+
+**Important point**: Some textbooks claim that there is a distinction between descriptive and predictive models. They make this claim to get the "okay" to abuse p-values and statistical tests. There is very solid science that demonstrates this is misguided. The only test of validity of a model is a predictive test. If you model cannot predict skillfully, then it is useless, no matter how many p-values indicate thumbs-up! I will return to this point when we reach multiple regression, to give you some solid examples of this fallacy. (Epistimologically speaking, you cannot validate a theory or a statement by just playing around with your sample of data. You either demonstrate the veracity of a theory by its ability to predict, or you demonstrate that your deductive hypotheses cannot be rejected at the face of sufficient evidence. The second option is very difficult to do in practice, because of the stringent requirements it places on what is a theory and what is a hypothesis. Someone enjoyomg a glass of cognac and saying their ideas is surely not a theory! That is a good time! No p-value can make that a theory.)
+
+You may have noticed that I did not make a big deal about the constant. I will touch on this when we detail multiple regression. 
+
+# Multiple regression
+This is the same story but with more explanatory variables. The easy way to write it is:
+$$y_t = \beta_0 + \beta_1 x_{1,t} + \beta_2 x_{2,t} + \ldots + \beta_p x_{p,t} + \varepsilon_t$$
+Like before the $x$'s can be nonlinear or whatever. The regression is linear in its coefficients. If you are familiar with linear algebra, multiple regression is typically written as:
+$$y = Xb + \varepsilon$$
+where $y$ is a vector of all $y_t$, $X$ is a matrix containing all different $x_t$'s as columns and $\beta$ is a vector containing all coefficients. The only reaosn I bring this here is because I want you to observe that the constant is nothing special (in $X$ it is typically a column of 1's) and that in this formulation the $Xb$ will always show its linear nature and won't be masked by nonlinear $x$'s.
+
+Let's take a simple case:
+$$y_t = \beta_0 + \beta_1 x_{1,t} + \beta_2 x_{2,t} + \varepsilon_t$$
+How does this look if we want to plot it. There are three variables $(y,x_1,x_2)$ so we need three dimensions. Bivariate regression is typically thought of as a line (although we shown that this is not necessary), a multiple regression with two $x$'s is a plane.
+
+```{r, fig.width = 7}
+library(plotly)
+
+set.seed(2026)
+n <- 20
+x1 <- runif(n, 0, 10)
+x2 <- runif(n, 0, 10)
+# Generate y with some noise
+y <- 5 + 0.7*x1 + 0.5*x2 + rnorm(n, sd = 2)
+
+fit <- lm(y ~ x1 + x2)
+coefs <- coef(fit)
+
+x1grid <- seq(min(x1), max(x1), length.out = 20)
+x2grid <- seq(min(x2), max(x2), length.out = 20)
+ygrid <- matrix(NA, nrow = length(x1grid), ncol = length(x2grid))
+for(i in 1:length(x1grid)) {
+  for(j in 1:length(x2grid)) {
+    ygrid[i, j] <- coefs[1] + coefs[2]*x1grid[i] + coefs[3]*x2grid[j]
+  }
+}
+yfitted <- fitted(fit)
+
+errortraces <- list()
+for(i in 1:n) {
+  errortraces[[i]] <- list(type = "scatter3d",mode = "lines",
+    x = c(x1[i], x1[i]),y = c(x2[i], x2[i]),z = c(y[i], yfitted[i]),
+    line = list(color = cmp1[1], width = 2),showlegend = FALSE,hoverinfo = "skip")
+}
+
+fig <- plot_ly() %>%
+  # Add the regression plane
+  add_surface(x = x1grid, y = x2grid, z = t(ygrid), colorscale = list(c(0, 1), c(cmp2[2],cmp2[2])),
+    opacity = 0.7,showscale = FALSE,name = "Regression Plane") %>%
+  # Add observed points
+  add_trace(type = "scatter3d",mode = "markers",x = x1, y = x2, z = y, marker = list(size = 6, color = "black"),
+    name = "Observations")
+ for(trace in errortraces) {
+  fig <- fig %>% add_trace(type = trace$type,mode = trace$mode,
+    x = trace$x,y = trace$y,z = trace$z,line = trace$line,showlegend = trace$showlegend,hoverinfo = trace$hoverinfo)
+}
+  
+fig <- fig %>% layout(
+    scene = list(
+      xaxis = list(title = "x<sub>1</sub>"),
+      yaxis = list(title = "x<sub>2</sub>"),
+      zaxis = list(title = "y"),
+      camera = list(
+        eye = list(x = 1.5, y = -1.5, z = 1.3)
+      )
+    )
+  )
+
+fig
+```
+
+And the model output now looks like:
+```{r}
+print(summary(fit))
+```
+
+A question that will arise is: do I need both $x_1$ and $x_2$? If we go with the p-value logic $x_2$ would be rejected, but as covered above, this is not valid. In fact the tools to decide whether to keep all variables in the model or not are not provided by this table. 
+
+Before we go there, let's trick our statistics. We will focus on $R^2$. We will trick it by introducing random explanatory variables. Random, as in generated completely randomly from a uniform distribution with some fake noise. Below is the result with 10 additional random variables. 
+
+```{r, fig.width = 7}
+set.seed(2026)
+n <- 20
+x1 <- runif(n, 0, 10)
+x2 <- runif(n, 0, 10)
+# Generate y with some noise
+y <- 5 + 0.7*x1 + 0.5*x2 + rnorm(n, sd = 2)
+
+X <- data.frame(cbind(y,x1,x2,matrix(runif(n*10)*5+rnorm(n*10,sd=2),ncol=10)))
+colnames(X) <- c("y",paste0("x",1:(ncol(X)-1)))
+temp <- lm(y ~ ., data=X)
+print(summary(temp))
+
+```
+
+$R^2$ jumped upwards! Remember these are just random numbers, there is no way they could explain the data in any meaningful way. Let's increase more! Below is the result with our 2 initial ones and 16 random variables (why 16? I got 12 variables + intercept in the model = 13 parameters, 20 data points - 13 parameters leaves me with 7 degrees of freedom. If I got to 16 additional variables I will have 16 random variable + 2 (x1 and x2) + 1 (intercept) = 19. This will leave me only one degree of freedom, beyond that it is no longer statistics! Also, compare the p-values for the intercept, x1, x2. $R^2$ is improving, but p-values are suggesting our previously important variables are becoming weaker. 
+
+```{r, fig.width = 7}
+set.seed(2026)
+n <- 20
+x1 <- runif(n, 0, 10)
+x2 <- runif(n, 0, 10)
+# Generate y with some noise
+y <- 5 + 0.7*x1 + 0.5*x2 + rnorm(n, sd = 2)
+
+X <- data.frame(cbind(y,x1,x2,matrix(runif(n*16)*5+rnorm(n*16,sd=2),ncol=16)))
+colnames(X) <- c("y",paste0("x",1:(ncol(X)-1)))
+temp <- lm(y ~ ., data=X)
+print(summary(temp))
+
+```
+Almost perfect $R^2$! Just for the sake of the argument, let's use up all degrees of freedom (data) with 17 random variables.
+
+```{r, fig.width = 7}
+set.seed(2026)
+n <- 20
+x1 <- runif(n, 0, 10)
+x2 <- runif(n, 0, 10)
+# Generate y with some noise
+y <- 5 + 0.7*x1 + 0.5*x2 + rnorm(n, sd = 2)
+
+X <- data.frame(cbind(y,x1,x2,matrix(runif(n*17)*5+rnorm(n*17,sd=2),ncol=17)))
+colnames(X) <- c("y",paste0("x",1:(ncol(X)-1)))
+temp <- lm(y ~ ., data=X)
+print(summary(temp))
+
+```
+This is a bit more profound result than what this table suggests. I have enough coefficients to match the number of data points (my degrees of freedom is 0). In this case we just solve a system with 20 values and 20 unknowns as if you were doing some basic algebra. For this case there is only one solution. If I went to use even more variables then I would have a parametric solution, you would need to give me some values for the unknowns (the coefficients) before I could estimate anything. You probably learned that regression is the unique line that minimises the errors, so why that unique line is any different than the unique line with the zero degrees of freedom?
+
+Let's use some plots of the actuals and the fitted regression lines, to see what is happening. 
+```{r, fig.width = 14, fig.asp = 0.25}
+par(mfrow=c(1,3),mar=c(4,4,3,1))
+plot(y,type="o",pch=20,xlab="",ylab="")
+lines(fit$fitted,col=cmp1[1])
+title(main=bquote(y[t] == hat(beta)[0] + hat(beta)[1] * x[1] + hat(beta)[2] * x[2] ~ "-" ~ RMSE: .(round(sqrt(mean((y - fit$fitted)^2)), 2))))
+
+plot(y,type="o",pch=20,xlab="",ylab="")
+lines(temp$fitted,col=cmp1[1])
+title(main=bquote(y[t] == hat(beta)[0] + hat(beta)[1] * x[1] + ldots + hat(beta)[19] * x[19] ~ "-" ~ RMSE: .(round(sqrt(mean((y - temp$fitted)^2)), 2))))
+
+plot(y,type="o",pch=20,xlab="",ylab="")
+lines(lm(y~1)$fitted,col=cmp1[1])
+title(main=bquote(y[t] == hat(beta)[0] ~ "-" ~ RMSE: .(round(sqrt(mean((y - lm(y ~ 1)$fitted)^2)), 2))))
+
+```
+
+To correctly interpret what is going on here we need to keep in mind two things. First, **data = structure + noise** and **noise is unforecastable**. Second, **the more coefficients I give to a model, the more I can "curve" a line**. Let's start from the second line. We said that a regression with two variables is a plane, not a line. A plane can rotate in more ways than a line, it has one more axis of rotation. If I go in 4 dimensions (3 variables) I gain on more axes of rotation, and so on. This means when I look at the fitted line it can twist in more ways than just its slope. If I give a model 20 coefficients, it has 20 axes to twist a line to fit 20 data points (0 degrees of freedom, i.e., as many data points as the coefficients.) 
+
+Look at the RMSE (Root Mean Squared Error) of the large model, RMSE = 0. What does this mean? There is no unexplained error in the data, the model can account for everything happening there. But, **data = structure + noise**, how can a model have zero error when there is noise? It has **overfit** to the data, it has overexplained them, i.e., it has tried to follow around the noise. Overfit models are useless for two reasons: they cannot predict, and they mislead you with their statistics. 
+
+Now let us look at the model that is just a flat line. Standard regression theory says this is a unique line. But the model with all the variables is the unique line. Which is one correct? What does unique means in these two cases? Let's understand why the flat line is where it is. 
+
+You probably have seen this plot:
+```{r, fig.width = 9,fig.asp=0.4}
+par(mar=c(4,4,2,1))
+plot(y,type="o",pch=20,xlab="",ylab="")
+constFit <- lm(y~1)
+constYhat <- constFit$fitted
+lines(constYhat,col=cmp1[1],lwd=2)
+for (i in 1:20){
+  lines(rep(i,2),c(y[i],constYhat[i]),col=cmp1[2],lwd=2)
+  text(i,sum(c(y[i],constYhat[i]))/2,bquote(e[.(i)]),col=cmp1[2],pos=4)
+}
+# title(main=TeX(paste0("$y_t= \\hat{\\beta}_0$ - RMSE: ", round(sqrt(mean((y - lm(y~1)$fitted)^2)),2))))
+title(main=bquote(y[t] == hat(beta)[0] ~ "-" ~ RMSE: .(round(sqrt(mean((y - lm(y ~ 1)$fitted)^2)), 2))))
+```
+
+We would square the errors, so that we care only about their magnitude, and minimise that. What does this imply?
+The calculation is $sqrt(1/20\sum_i^{20}(y_i - \beta)^2)$. Let's plot the result for different values of the coefficient.
+
+```{r }
+par(mar=c(4,4,2,1))
+xx <- seq(0,20,length.out=101)
+err <- sqrt(colMeans(sapply(xx,function(x){y-x})^2))
+plot(xx,err,type="l",pch=20,xlab="",ylab="",lwd=2,col=cmp1[1])
+constBeta <- coef(lm(y~1))
+points(constBeta,sqrt(mean((y-constBeta)^2)),pch=20,cex=1.5)
+abline(v=constBeta,lty=2)
+text(constBeta,9,"Minimum error",pos=2)
+text(constBeta,9,bquote(beta == .(round(constBeta, 4))),pos=4)
+title(ylab="RMSE",xlab="Coefficient value",line=2.5)
+title(main="Error surface")
+
+```
+Let's validate that the value is the same
+
+```{r }
+print(summary(lm(y~1)))
+```
+
+The shape of the error surface is called convex, that tells us that there is one unique minimum point. So as I try different values for the coefficient, I will find one that will minimise the **average squared error**. Why do I insist on the average? Because it is the average error across the 20 observations. Let's check something else, what is the mean of the observations?
+```{r }
+print(round(mean(y),4))
+```
+So the coefficient that we find by minimising the squared error is the average of the data. Here is the mechanism of what is really going on: When we minimise the squared errors we estimate a conditional mean. The mean is conditioned on whatever inputs the model has, the x's. This model has just an constant (we multiply the coefficient with x={1, 1, ..., 1})), so it can find only a single number. That single number will always be the sample average. If we work through the equations we will find that the minimum of squared errors is the mean, let's do this, it is only a couple of lines. 
+
+This is the loss function, the MSE if we allow change sin the $c$ constant.
+$$J(c) = \frac{1}{n} \sum_{i=1}^{n} (x_i - c)^2$$
+To find the minimum we take its derivative with respect to $c$ the parameter we can change (we want to see when the rate of change of the error surface becomes zero, i.e., when the convex surface has reached the flat minimum):
+$$\frac{d}{dc} J(c) = \frac{1}{n} \sum_{i=1}^{n} 2(x_i - c) \cdot (-1)$$
+We want this to be equal to zero:
+$$-\frac{2}{n} \sum_{i=1}^{n} (x_i - c) = 0$$
+Get rid of the $-2/n$ by dividing both sides by it
+$$\sum_{i=1}^{n} (x_i - c) = 0$$
+Expand:
+$$\sum_{i=1}^{n} x_i - \sum_{i=1}^{n} c = 0$$
+The summation of a constant is just that thing as many times as you want to sum it up, so if we sum up to $n$ we get $n \times c$
+$$nc = \sum_{i=1}^{n} x_i$$
+We're there:
+$$c = \frac{1}{n} \sum_{i=1}^{n} x_i$$
+Whenever you minimise squared errors you will end up with the conditional mean. 
+
+Just for context, if you were to minimise the absolute errors, you would get the median. Squared errors are sensitive to outliers, just like the mean, because these two are connected. Absolute errors are robust against outliers, just like the median, because these two are connected. 
+
+So that unique line we get form the regression is the "average" best line. Let's go one step deeper.
+
+We plot the regression for 5, 10, 15, 20 observations:
+```{r, fig.width = 14,fig.asp=0.3}
+par(mar=c(4,4,2,1),mfrow=c(1,4))
+for (i in 1:4){
+  zz <- y[1:(5*i)]
+  plot(zz,type="o",pch=20,xlab="",ylab="",xlim=c(1,21),ylim=c(4,17))
+  tempCf <- coef(lm(zz~1))
+  abline(h=tempCf,col=cmp1[1])
+  text(21,17,bquote(beta[0] == .(round(tempCf, 4))),col=cmp1[1],pos=2,cex=1.5)
+}
+```
+The value changes, that is not unexpected. But here is the harder question. All these lines are unique optimal lines. Which of them is the optimal optimal?
+
+First, let's make a connection with what we said before, recall the standard error of a coefficient? That is a standard deviation. I can approximate it calculating multiple coefficients as I did above and get a distribution. The standard deviation of that distribution will approximate that number. How uncertain we are at the value we place to a coefficient. (Strictly speaking, this is wrong, we would have to resample 20 observations every time and look at the standard deviation of that distribution... which is connected to the noise, as the 20 observations will differ due to noise.)
+
+None of these lines is optimal. All are conditional on the sample size. If I increase the sample by 1 observation, I'll get a different number. As the sample keeps on increasing, these differences will become minimal, so we will have converged to a reliable number. Do we know if the number we have for 20 observations is reliable? Actually, yes, that is the use of the standard error, the t-statistic, and the p-value. They all tell us if the estimation is reliable, not if that variable should be in the model or not. 
+
+Now, let's return to our three regressions we the different number of variables. Look at the RMSE there, the fewer the variables the higher it is, the more the variables, the smaller it is. (We already said, a model with more parameters can fit more easily to data, so this is expected.) **If we try to build a model to minimise the error, we will end up with the largest (overfit) model, which is useless**. Following the $R*2$ gives exactly the same result. Likewise, the model with just the constant may be too simplistic, may not follow the structure of the data. So it does not only filter out the noise, but it filters out the structure as well. We call these models **underfit, or biased**. 
+
+For a modeller the question is which of these three regressions is best (well we know one is full of random variables, so surely not that one!). Before we answer that, let's do another small experiment. Repeat the example with the changing sample size, for the regression with the x's. 
+
+```{r, fig.width = 14,fig.asp=0.3}
+par(mar=c(4,4,2,1),mfrow=c(1,4))
+for (i in 1:4){
+  zz <- y[1:(5*i)]
+  tempfit <- lm(zz~x1[1:(5*i)]+x2[1:(5*i)])
+  plot(zz,type="o",pch=20,xlab="",ylab="",xlim=c(1,21),ylim=c(4,17))
+  lines(tempfit$fitted,col=cmp1[1])
+  tempCoef <- coef(tempfit)
+  for (j in 1:3){
+    text(21,18-j,bquote(beta[.(j - 1)] == .(round(tempCoef[j], 4))),col=cmp1[1],pos=2,cex=1.5)
+  }
+}
+```
+
+Notice how these coefficients change more dramatically than the simpler model with just a constant. Let's plot that
+
+```{r, fig.width = 10,fig.asp=0.3}
+allCoef <- array(NA,c(4,4))
+for (i in 1:4){
+  zz <- y[1:(5*i)]
+  tempfit <- lm(zz~x1[1:(5*i)]+x2[1:(5*i)])
+  allCoef[i,2:4] <- coef(tempfit)
+  allCoef[i,1] <- coef(lm(zz~1))
+}
+  
+layout(rbind(c(1,1,1,2,2,2,2)))
+par(mar=c(4,4,2,1))
+boxplot(allCoef[,1,drop=FALSE],col=cmp2[2],ylim=c(-1,12))
+axis(1,at=1,labels=expression(hat(beta)[0]))
+title(main=expression(y[t] == hat(beta)[0]))
+boxplot(allCoef[,-1,drop=FALSE],col=cmp2[2],ylim=c(-1,12),xaxt="n")
+axis(1,at=1:3,labels=expression(hat(beta)[0], hat(beta)[1], hat(beta)[2]))
+title(main=expression(y[t] == hat(beta)[0] + hat(beta)[1] * x[1] + hat(beta)[2] * x[2]))
+
+```
+
+Think the two models in terms of total variance coming from their coefficients. The model with the more parameters will tend to have more variability. This is another fundamental ting in statistical modelling: **model variance increases with model complexity**. The model with more variance is less stable as the data change. This does not have to be silly academic ways to change the data, but it could be something as getting the new sales figures or whatever you are modelling. (I have made a few simplifications here. First, we would not vary the sample size, but we would resample the same sample size. (Can you think why changing the sample size is a bad idea to get comparable numbers?) Second, model variance is the (conditional) variance of the estimator of $y_t$, the $\hat{y}_t$ amd not of the parameters, but for linear models there is an analytical connection between these two. The answer to my question here is: the degrees of freedom change, and as we saw, as I run out of degrees of freedom, my model statistics become unrealiable, so I prefer to keep that constant to have the quality of the model estimation constant as well, so any variability is due to model complexity and data noise.)
+
+When we think of models we have two fundamental quantities **bias** (think it as structural bias, is my model too simple to explain the data?) and **variance** (is my model too volatile in its estimation because of its complexity?). These two are connected through the **bias-variance trade-off**. Here I will spare you the maths - it is not difficult, but the notation is a mess: wikipedia is one click away, we can go through it together.
+
+$$ Predictive\ MSE\ (Mean\ Squared\ Error) = Bias^2 + Variance + Irreducible\ Error $$
+
+The irreducible error is the level of noise, so we can pretend it is not there, and think the equation as excess predictive error (over noise) due to our modelling. 
+
+$$ Excess\ Error = Bias^2 + Variance $$
+
+How do these two things move? The examples above suggest that Bias decreases with complexity (the model has more capacity to learn stuff), and the variance increases with complexity (the model has many parameters and becomes jittery). Below is a simplified schematic of these two.
+
+```{r, fig.width = 8}
+par(mar=c(4,4,1,1))
+# The maths here are incorrect, I am only producing an impression of how this would look
+complexity <- seq(1, 10, length.out = 100)
+bias_sq <- 80 / (complexity + 0.5)
+variance <- 0.6 * complexity^2
+# Irreducible error is a constant
+irreducible <- 15
+# Total Error is the sum of the three
+total_error <- bias_sq + variance + irreducible
+
+plot(complexity, total_error, type = "l", col = cmp1[1], lwd = 3,
+     ylim = c(0, 100), xlab ="", ylab ="")
+title(xlab="Model Complexity (High Flexibility ->)",ylab="Error",line=2.5)
+# Bias
+lines(complexity, bias_sq, col = cmp1[2], lwd = 2, lty = 2)
+# Variance
+lines(complexity, variance, col = cmp1[3], lwd = 2, lty = 2)
+# Irreducible Error line
+abline(h = irreducible, col = "gray40", lwd = 2, lty = 3)
+# Optimal complexity
+optimal_x <- complexity[which.min(total_error)]
+abline(v = optimal_x, col = "black", lty = 4)
+text(optimal_x,  90, "Optimal Complexity", pos = 2, srt = 90)
+
+legend("topleft",legend = c("Total Error", "Bias^2", "Variance", "Irreducible Error"),
+       col=c(cmp1[1:3],"gray40"),lty = c(1,2,2,3),lwd = 2, bty = "n")
+```
+
+This is the fundamental challenge in selecting the correct model or the correct variables. Every model is somewhere on the red line. This red line is unknown for the future data, for which we need a prediction. So the challenge is how to pick the model that balances bias and variance, so that it does not overfit or underfit, but fits just about right to the data. This model will approximate the underlying structure accurately and provide reliable predictions. 
+
+* Adding too few variables/structure and you end up with a very biased models that underfits.
+
+* Make your model too complex, and you end up with a model with very high variance that is unreliable. This will pretend to do something smart by matching the data very closely, but it is just overfitting. 
+
+Before we proceed to show how to resolve this, let me demonstrate why overfitting gives terrible predictions. 
+
+```{r, fig.width = 8,fig.asp=0.7}
+par(mar=c(4,4,2,1),mfrow=c(2,2))
+n <- 20
+hrz <- 20
+
+for (j in c(1,3,10)){
+  poly_order <- j
+  x <- seq(0,2,length.out=n+hrz)
+  xTest <- x[(n+1):length(x)]
+  x <- x[1:n]
+  y  <- sin(x*2*pi)
+  yTest <- sin(xTest*2*pi)
+  
+  polyfit <- lm(y ~ poly(x, poly_order, raw = TRUE))
+  yhat <- predict(polyfit)
+  yhatTest <- predict(polyfit,newdata=data.frame(x=xTest))
+  
+  plot(c(x,xTest),c(y,yTest),ylim=c(-3,3),type="o",pch=20,xlab="",ylab="")
+  lines(x, yhat, col=cmp1[1],lty=2,lwd=2)
+  lines(xTest, yhatTest, col=cmp1[1],lwd=2)
+  abline(v = (x[n]+xTest[1])/2,lty=2)
+  title(xlab="Period",line=2.5)
+  if (j == 1){
+    title(main=bquote("Underfit - Polynomial Order:" ~ .(poly_order)))
+  } else {
+    title(main=bquote("Overfit - Polynomial Order:" ~ .(poly_order)))
+  }
+  text(xTest[hrz],2.5,"Prediction periods",pos=2)
+}
+
+# And the correct model
+plot(c(x,xTest),c(y,yTest),ylim=c(-3,3),type="o",pch=20,xlab="",ylab="",
+       main = "Correct model (sine wave)")
+  lines(x, y, col=cmp1[1],lty=2,lwd=2)
+  lines(xTest, yTest, col=cmp1[1],lwd=2)
+  abline(v = (x[n]+xTest[1])/2,lty=2)
+  title(xlab="Period",line=2.5)
+  text(xTest[hrz],2.5,"Prediction periods",pos=2)
+
+```
+
+The data contain no noise, so any issues are directly from how appropriate the model is. A polynomial cannot fit a sine wave when its inputs are just time ($x=1,2,3,4,5,\ldots$). If we increase the order of the polynomial it looks as if it is doing a good job, judging from the in-sample. There are overfit results, they pretend to have modelled something, but in fact they have just twisted around the data points due to their many parameters. They have not learned any of the structure of the data. 
+
+The majoirty of variable and model selection approaches operate on the principle:
+**$$ Best\ Model = Best\ Data\ Fit + Penalty\ for\ Complexity$$**
+The different approaches effectively just pick another penalty. **Adjusted $R^2$** is one of those approaches. The issue it has is that the penalty is uses nowadays considered to be miscalculated. (I am oversimplifying a bit! It is not explicitly separating the bias and variance, and hopes to achive that through the degrees of freedom. That does not work though.)
+
+There are three widely used ways that are valid in 2026 that are relevant to the types of models you will face:
+
+* Information criteria, such as the Akaike Information Criterion (AIC). These model directly the variance and the bias decomposition, with a fixed weight for how to balance the two. 
+
+* Cross-validation, where we try to infer the correct model complexity by meaasuring its out-of-sample performance.
+
+* Shrinkage estimators, that instead of giving a penalty to the fitted model for its complexity, penalise the coefficients directly during estimation to not allow it to fit too well on the data. 
+
+All these three have connections between them. Regression is the easy use case, but more advanced models like ARIMA, GARCH, etc., are typically specified using these tools. 
+
+## Variable (model) selection
+
+Since you are aware of multiple regression, I assume you have seen standard regression problems. Since now you have to deal with time series, let's focus on dynamic regression, i.e., a regression that contains time dynamics (how yesterday affects today, and so on). What we go through here is also the basis of ARIMA models. 
+
+The fist component we need to understand is **lags**. Let $y_t$ be the obsservation at period $t$. The convention is that $t$ is now. The previous period is $t-1$, the next period is $t+1$ and so on. If your data is daily, then these would be yestrday or tomorrow. The data could be monthly, and then it would be previous and next months, and so on. How does this look in terms of data? When we build regression models we need to organise the data in columns. All data in a row correspond to the data for a single observation. The same idea applies here. 
+
+```{r }
+
+# This is the generating process of the time series
+# Use k lags
+coef <- c(0.4, 0.2)
+k <- length(coef)
+# Create a time series of n periods
+n <- 36
+# Choose a variance for the noise (innovation term)
+sigma <- 10
+# Choose a level (average)
+level <- 100
+# Create an empty vector of data
+y <- rep(NA,c(n+k))
+# Plug in two p initial values - these are the data before we started collecting data
+set.seed(2026)
+y[1:k] <- rnorm(k,sd=sigma)
+# Generate the series
+for (i in (k+1):(n+k)){
+  y[i] <- y[(i-k):(i-1)] %*% rev(coef) + rnorm(1,sd=sigma)
+}
+# Remove initial values and add level
+y <- y[(k+1):(n+k)] + level 
+```
+
+We create a monthly time series. This is placed in the first column, and from that we create 5 lags. These are placed in the columns next to it. 
+
+```{r }
+# Create p lags
+# First the matrix to store the data
+p <- 5
+n <- length(y)
+dates <- rev(format(seq(Sys.Date(),by = "-1 month",length.out=n),"%Y-%m"))
+X <- array(NA,c(n,p+1),dimnames=list(dates,c("Yt",paste0("Yt-",1:p))))
+# Create lags, starting for the actual series
+for (i in 1:(p+1)){
+  X[,i] <- c(rep(NA,i-1),head(y,n-i+1))
+}
+print(round(head(X,8),2))
+```
+
+Each row corresponds to a month. When a regression reads the data, it will read it row by row. Let's look at the second row (2023-03). The current value is `r round(X[2,1],2)`. The value for t-1, the previous month is `r round(X[2,2],2)`, which is taken from the time series from date 2023-02. The rest of the lags are empty, because we do not have data from so much in the past to populate them. In the third row I have a t-2 data point from 2023-02, so I can add it there, and so on. 
+
+Let's look at the last rows of the table.
+```{r }
+print(round(tail(X,8),2))
+```
+
+Look at the last row. The values in there are the values we get if we would read the 5 previous values from the column "Yt", i.e., from 2025-12 to 2025-08.
+It is good practice to trim to rows that are not complete. Mathematically, they do not exist, as we need complete variables (each column). So the begging of our matrix becomes (I just removed the top 5 rows):
+
+```{r }
+X <- X[(p+1):nrow(X),]
+print(round(head(X,8),2))
+```
+
+We want to build a regression. First we plot the data. I will look at two plots. How does our series looks like, and scatter plots between the target "Yt" and the lags. 
+
+```{r }
+par(mar=c(4,4,1,1))
+plot(X[,1],type="l",xlab="",ylab="",xaxt="n")
+title(ylab="Yt",xlab="Time",line=2.5)
+axis(1,at=1:nrow(X),labels=rownames(X))
+```
+
+Nothing special is happening with the data (trend, seasonality, outliers, structural breaks) - we have not talked about any of these yet. 
+Here are the scatter plots
+
+```{r, fig.width = 12,fig.asp=0.2}
+par(mar=c(4,4,2,1),mfrow=c(1,5))
+for (i in 1:p){
+  plot(X[,1+i],X[,1],type="p",pch=20,xlab="",ylab="",cex=2)
+  title(ylab="Yt",xlab=colnames(X)[i+1],line=2.5)
+  abline(lm(X[,1]~X[,1+i]),col=cmp1[1])
+  title(main=paste0("Lag ",i," - Correlation: ",round(cor(X[,1],X[,1+i]),2)))
+}
+```
+
+Notice the correlations. If I just take those and plot them as a barchart, I get the plot of the autocorrelation function. "Auto" + correlation, where "auto" means "itself" in Greek, so correlation to itself (not exactly, but your Greek lesson can wait!). We rarely write the full AutoCorrelation Function, but rather ACF. 
+
+```{r }
+par(mar=c(4,4,2,1))
+acf(X[,1],main="",ylim=c(-1,1))
+```
+
+The first bar is correlation of "Yt" to "Yt", so it is always 1. The second bar is "Yt" to "Yt-1". The number from the scatter plots should match the size and direction of the bar in the ACF. The horizontal blue lines are confidence intervals. For bars outside the intervals, there is significant evidence that their values are not (just) due to noise. 
+
+Let's look at the correlation between "Yt-1" and the rest.
+```{r, fig.width = 12,fig.asp=0.2}
+par(mar=c(4,4,2,1),mfrow=c(1,5))
+for (i in 2:(p-1)){
+  plot(X[,1+i],X[,2],type="p",pch=20,xlab="",ylab="",cex=2)
+  title(ylab="Yt-1",xlab=colnames(X)[i+1],line=2.5)
+  abline(lm(X[,1]~X[,1+i]),col=cmp1[1])
+  title(main=paste0("Lag ",i," - Correlation: ",round(cor(X[,1],X[,1+i]),2)))
+}
+```
+That they are correlated is not a surpise. If Yt and Yt-1 and Yt and Yt-2 are correlated as pairs, so will Yt-1 and Yt-2. We want to have an idea of the clean information that Yt-2 carries for Yt, without the impact of Yt-1. This is the so called partial autocorrelation (PACF). This is how it looks for our data. 
+```{r }
+par(mar=c(4,4,2,1))
+pacf(X[,1],main="",ylim=c(-1,1))
+```
+
+The first bar is the PACF value for the Yt-1, then Yt-2, and so on. Notice three things, first, the values are different, second the value for Yt-1 in the ACF and PACF is the same, as there is no lag before it to clean up, third, in the ACF we an almost sinusoidal wave across the bars, which is absent in the PACF. What is this wave? The correlations between lags that we plotted before. The ACF changes in a smoother way because of these correlations. The PACF has cleaned that information, so that wave is no longer there. 
+
+(How is the PACF calculated? We build a regression up to the previous lag and lock the coefficients. Then we estimate the coefficient for the current lag. To go to the next lag, we lock that coefficient, and estimate the next one, and so on. What does this do? It tells the regression: do not touch any of the contributions of the previous lags, just estimated what is the on-top contribution of the new lag without any redundancies.)
+
+When we build a regression, to identify how many lags we want to include we care about the PACF. Regression does not like redundant information, because it leads to multicollinearity. The PACF has cleaned up that information, so only find lags that have contribution on their own. (This is very relevant for ARIMA, as this is the AR part of ARIMA.)
+
+If we were to build a moving average (I have not introduce what this is, but think about it as a short average that rolls over the data) I do not worry about redundancies, if anything I want to consider those, as the function of the moving average is to deal with the randomness in the data. Let me make this statement a bit clearer. Suppose we have a constant + noise. As the noise is random, some times it will be over the constant and sometimes it will be under the mean. If I want to cancel the noise, all I need is to take an average. The noise over the constant will add to the noise under the constant (negative) and will cancel out, leaving us with just the constant. (Recall, this is what regression is trying to do by minimising the squared errors: estimate a conditional mean (conditional on X's) to remove the impact of noise.) The moving average works on the same principle. It says if I take a local average of, for example, 5 periods, I will cancel some randomness. If I would take a longer average I will cancel some more randomness, but there is a point I can cancel too much (we will see this in detail with ARIMA models). The ACF would inform the average how many periods to take to cancel that randomness.
+
+Both the ACF and PACF are tools that are nowadays considered somewhat obsolete, as they can only help you identify simple data generating processes, and real data are anything but simple. The logic behind them is quite useful though, as you can see most of the time series models, from simple averages to very complex "AI" models as a combination of autoregressive and moving average components. 
+
+Back to our regression! Our question was variable selection. I got 5 lags, which one to choose? Let's use standard regression to decide. 
+```{r }
+X <- data.frame(X)
+fitFull <- lm(Yt~.,data=X)
+print(summary(fitFull))
+```
+
+If we would like to follow old-style stuff, we would reject insignificant variables and build on significant ones (this is wrong! just as an example we do this here):
+
+```{r }
+X <- data.frame(X)
+fit1Lag <- lm(as.formula(Yt ~ Yt.1),data=X)
+print(summary(fit1Lag))
+```
+
+Both $R^2$ and Adjusted $R^2$ went down. What is happening here? 
+
+You may have seen the stepwise function. 
+```{r }
+X <- data.frame(X)
+fitStep <- step(lm(Yt~.,data=X))
+print(summary(fitStep))
+```
+
+This tries to start from a full model (all available variables are used), and then tries to see if by removing a variable the model improves. What score does it look to see if it improves? Note that it reports AIC (Akaike Information Criterion). This is what it tries to optimise. Not the significance (p-values), $R^2$, or Adjusted $R^2$. Let's follow the transcript. It changes only one variable at the time. It reports for each action what would be the resulting AIC and always picks the one that minimises it. 
+
+What exactly is AIC?
+
+$$AIC = -2log(\mathcal{L}) + 2k$$
+
+where $\mathcal{L}$ is what we call likelihood and $k$ is the number of model parameters (its complexity). I think the next few lines may go a bit too deep, but follow through if you want to know what exactly likelihood is. Imagine I have a simple model $y_t = \beta_0 + \beta_1 x_t + \varepsilon_t$. I need to estimate its parameters $\beta_0$, $\beta_1$, and the variance in the noise, a $\sigma_{\varepsilon}$ for $\varepsilon_t$. If I need a variance, I am already starting to put some assumptions about the distribution of noise. Recall the example of ice cream sales: the normal distribution is very often a reasonable assumption. To find the parameters of the model, just like with regression we will minimise the squared errors $e_t^2$, but not under the condition that the errors are distributed normally. We do that, because we want to use that information to get a good estimation for the variance. If we did not assume that, then estimating the variance is much more complicated. The word likelihood implies a probability. What is the probability that, for example, $\beta_0 = 3$ would be true when I have seen data like $y_t$? If I want to sum up probabilities I multiply them together. So I would say what is the probability for $y_1$, $y_2$, and so on. Then I would take the product of these probabilities. Generally working with products is difficult, we much rather prefer to work with sums. The way to transform a product to sum is to calculate its logarithm (we will return to this again, as this is quite important for your course.). The likelihood includes a product of probabilities, the log-likelihood includes a sum. Here is the formula of the likelihood assuming normally distributed errors:
+$$\mathcal{L}(\boldsymbol{\theta}, \sigma^2 | \boldsymbol{y}) = \prod_{t=1}^T \frac{1}{\sqrt{ 2 \pi \sigma^2 }} \exp \left( - \frac{e_t^2}{2 \sigma^2}\right)$$
+Let's see what is important here. The $\theta$ is a vector of all the parameters, and $\sigma^2$ is the variance of the noise. The $\frac{1}{\sqrt{ 2 \pi \sigma^2 }} \exp \left( - \frac{something}{2 \sigma^2}\right)$ is coming directly from the equation of the normal distribution, where "something" has zero mean and is normalised by $\sigma^2$. So the only "moving part" in the likelihood is the errors ($e_t^2$). If I ignore the decoration, I have a product of squared errors. If I take the log of that  I have a sum of squared errors. This we meed to minimise. Look at AIC, it has a minus in front of $log(\mathcal{L})$. This minus makes the minimise into maximise, it reverses the direction of where is the optimal value. So when we maximise the likelihood of a model as long as we have normally distributed errors (and some additional weaker assumptions) we could just as well write the MSE (Mean Squared Error) instead.
+
+We can simplify AIC to make it clearer what it does:
+$$AIC = -2log(MSE) + 2k$$
+and we want this to be as small as possible (it does not stop at zero, it can go negative). Or in human terms:
+$$AIC = Goodness\ of\ fit + Penalty\ for\ complexity$$
+
+This is trying to emulate the bias-variance discussion from before. This is exactly what AIC does. It asks you to minimise MSE (maximise goodness of fit), i.e., reduce the bias of the model and inadvertently increase its variance. As you allow the model to has more parameters, i.e., more variables, explanatory, lags, indicators, whatnot, its complexity increases, and so does the penalty. AIC attempts to stop you when the increase in variance becomes so much that the total error will start increasing again. 
+
+(There are other information criteria, like the BIC, and their only difference is stronger or weaker penalty for complexity. For instance, BIC has a stronger penalty, resulting in smaller models. In practice, it does not matter that much which information criterion you use. People tend to get dogmatic about it, but the evidence just doesn't add up, it does not matter that much, and actually in 2026 we have even better tools: teaser for shrinkage estimators!)
+
+I have not discussed about the 2's in the formula. You could very well remove those and you will get the same answer. They are there due to the derivation of AIC, to keep the math intact. 
+
+Long story short: **Information criteria, like AIC, is the accepted way to choose variables for a model**, or between different models, as long as their likelihoods can be compared. We can return to this statement when we look at choosing between models. 
+
+We identified the variables for the regression using a stepwise process. Stepwise will typically be okay, but it is not gauranteed to give you the best AIC model. Furthermore, the stepwise (or globally) best AIC model can contain statistically insignificant variables. This is fine, p-values do not tell us anything about whether a variable should be in the model or not, just if their coefficients are well estimated. AIC on the other hand, is trying to achive the best expected error (for unseen data) by balancing the bias and the variance. Simply put, AIC tries to optimise the predictive abilities of a model, not how well it fits in-sample (what p-values and $R^2$ do). **An AIC optimal model should be resistant to both over- and under-fitting.** Let's understand why. If the model is underfit, then the "goodness of fit part" is not large enough (as it goes with a minus in the AIC, that is bad - we want AIC to be as small as possible). If the model overfits, then the penalty is too large. 
+
+When we go to ARIMA we will see that it is very effective to choose the order (how many parameters) of the autoregression and moving averages using AIC, so all this will come together when we have the full model. For example, the stepwise above selected to keep the first to lasg, so we have a 2-order autoregressive part (AR) for the ARIMA. 
+
+If it is unclear, AIC does not care what your variables are. In your matrix of X's you can have autoregressions, external variables, autoregressions of the external variables, indicators (dummy variables), past errors, etc. AIC will go through them 1-by-1 and will pick the best subset of variables to maximise the predictive performance of the model, according to its embedded penalty (what I am alluding to here is that this penalty may be inappropriate in some cases).
+
+What about very highly correlated variables? (Multicollinearity) Can AIC deal with those? Technically, this is not an issue of the AIC, but of the stepwise process for selecting variables. With linear model multicollinearity is always an issue, and we cannot automate its treatment fully (we can get pretty close to that with shrinkage estimators, that we have not seen yet). However, a more pressing issue is when that high correlation between variables may be spurious. This is where stationarity comes in place. 
+
+## Stationarity - the I in the ARIMA
+When we say that a time series is stationary, we are saying that its mean at different points in time is the same. If there was some trend, the mean would change over time and the series would not be stationary. If we are looking only at the local mean, this is the so-called weak stationarity. We can also ask the same of variances, that the variance is constant over time (homescedastic). This is the so-called strong stationarity. If we see the time series as a distibtuion by stripping the time dimension away, we can ask for stationarity in all the moments of the distributions, like skewness, kurtosis, and so on. 
+
+First we foces on level-stationarity (the mean). We will look at variance stationarity together with GARCH models, as the practical implication of that is that your prediction intervals (your future variance) has some modellable structure. This can be very useful for portfolio analysis, and so on. 
+
+What is a trend? It could be what we can a deterministic trend, a straight line, or stochastic, there is a tendency to go up or down, but no consistency. Another way to think of that is that the trend is evolving over time. Here are some examples:
+```{r, fig.width = 9,fig.asp=0.3}
+par(mar=c(4,4,2,1),mfrow=c(1,3))
+set.seed(1)
+for (i in 1:3){
+  plot(cumsum(rnorm(40)),xlab="",ylab="",type="l")
+}
+```
+
+All these are examples of non-stationary time series. If we were to imagine calculating a rolling average over the data, its value would change across time. There is no consistent mean, so the series are not stationary. (There are formal statistical tests for that, and their logic is exactly that, calculate many local means, and see if they are statistically different or not.) 
+
+There are two issues when we model data that are non-stationary. First, it can lead us to spurious results. Second, it introduces a lot of issues with the estimation of model parameters (and therefore with variable selection, and uncertainty/variance estimation).
+
+Correlation can be understood as co-movement. if two variables move together then they are correlated (it does not have to be the same direction, a negative correlation would make them move to opposite sides, but they still move together). Below I plot the Swedish per capita GDP and my cumulative ice cream consumption since year 2000.
+
+```{r, fig.width = 10,fig.asp=0.3}
+
+sweGDPpp <- c(29892.93,30890.36,31971.32,33086.68,35256.10,37227.10,39880.86,41961.49,
+              42038.91,40132.49,42614.56,44551.53,44847.56,45704.23,47067.65,49067.25,
+              49859.62,51069.01,52677.60,56641.38,57253.29,62361.74,67190.73,69335.94,
+              71396.35,73069.51)
+
+par(mar=c(4,4,2,1),mfrow=c(1,3))
+plot(2000:2025,sweGDPpp,xlab="",ylab="",type="l")
+title(xlab="Year",ylab="000s USD pp",line=2.5)
+title(main="Swedish GDP per capita",line=1)
+
+iceCream <- c(41.6,42.9,45.1,45.2,58.2,74.2,90.4,108.0,122.2,139.7,164.6,195.1,
+              221.6,240.1,258.2,278.6,305.8,326.5,349.2,373.1,403.1,433.1,435.3,
+              484.0,504.1,522.5)
+
+plot(2000:2025,iceCream,xlab="",ylab="",type="l")
+title(xlab="Year",ylab="Tons",line=2.5)
+title(main="Nikos' cumulative ice cream consumption",line=1)
+
+plot(iceCream,sweGDPpp,pch=20,cex=1.5,xlab="",ylab="")
+title(ylab="GDP per capita (000s $)",xlab="Ice Cream (Tons)",line=2.5)
+title(main="Scatter plot",line=1)
+abline(lm(sweGDPpp~iceCream),col=cmp1[1])
+text(100,70000,paste0("Correlation;",round(cor(sweGDPpp,iceCream),2)),col=cmp1[1],pos=4)
+
+```
+
+They both co-move. They are highly correlated. One could build a regression here, and the regression would indicate a valid model:
+
+```{r }
+print(summary(lm(sweGDPpp~iceCream)))
+```
+Obviously this is not correct. Swedish GDP is causally connected with my kannelbullar consumption, it would be funny if it was the ice cream.
+
+We can show the same thing with seasonality. I can take any seasobal time series and show a connection with a sine wave of the appropriate frequency. **All these connections are spurious.** 
+
+A way to break the spurious connection is to ask **do they change in the same way?** Now I want to model the rate of change of each time series. 
+```{r, fig.width = 10,fig.asp=0.3}
+par(mar=c(4,4,2,1),mfrow=c(1,3))
+plot(2001:2025,diff(sweGDPpp),xlab="",ylab="",type="l")
+title(xlab="Year",ylab="000s USD pp",line=2.5)
+title(main="Delta (Swedish GDP per capita)",line=1)
+
+plot(2001:2025,diff(iceCream),xlab="",ylab="",type="l")
+title(xlab="Year",ylab="Tons",line=2.5)
+title(main="Delta (cumulative ice cream)",line=1)
+
+plot(diff(iceCream),diff(sweGDPpp),pch=20,cex=1.5,xlab="",ylab="")
+title(ylab="GDP per capita (000s $)",xlab="Ice Cream (Tons)",line=2.5)
+title(main="Scatter plot",line=1)
+abline(lm(diff(sweGDPpp)~diff(iceCream)),col=cmp1[1])
+text(0,5000,paste0("Correlation;",round(cor(diff(sweGDPpp),diff(iceCream)),2)),col=cmp1[1],pos=4)
+
+```
+
+And now the regression is
+```{r }
+print(summary(lm(diff(sweGDPpp)~diff(iceCream))))
+```
+or better yet, ask AIC:
+```{r }
+iceDiffFit <- step(lm(diff(sweGDPpp)~diff(iceCream)))
+summary(iceDiffFit)
+```
+Reasonably the regression found that this makes no sense. 
+Modelling things in their rate of change can help break spurious connections. Now let's look at this from a technical stand point. Rate of change is what in statistics we call differences:
+$$z_t = y_t - y_{t-1}$$
+That is a first order level difference. Let's look what happens with the Swedish GDP when I do that. 
+```{r, fig.width = 8,fig.asp=0.35}
+par(mar=c(4,4,2,1),mfrow=c(1,3))
+plot(2000:2025,sweGDPpp,xlab="",ylab="",type="l")
+title(xlab="Year",ylab="000s USD pp",line=2.5)
+title(main="Swedish GDP per capita",line=1)
+
+plot(2001:2025,diff(sweGDPpp),xlab="",ylab="",type="l")
+title(xlab="Year",ylab="000s USD pp",line=2.5)
+title(main="Delta (Swedish GDP per capita)",line=1)
+abline(h=0,col="black",lty=2)
+abline(h=mean(diff(sweGDPpp)),col=cmp1[1])
+legend("topleft","Average",cmp1[1],lty=1,bty="n")
+```
+
+The first differences of the Swedish DGP are now stationary, the series fluctuates around a mean (red line). Let's look at my ice cream consumption:
+
+```{r, fig.width = 8,fig.asp=0.35}
+par(mar=c(4,4,2,1),mfrow=c(1,3))
+plot(2000:2025,iceCream,xlab="",ylab="",type="l")
+title(xlab="Year",ylab="Tons",line=2.5)
+title(main="Nikos' ice cream",line=1)
+
+plot(2001:2025,diff(iceCream),xlab="",ylab="",type="l")
+title(xlab="Year",ylab="Tons",line=2.5)
+title(main="Delta (ice cream)",line=1)
+abline(h=0,col="black",lty=2)
+```
+
+Observe that my ice cream consumption rate of change is still trending upwards. FIrst differences were not sufficient to make this stationary. We can repeat to 2nd order differences. So now we take differences on the differences. This is the rate of change of the rate of change of the time series (or the acceleration of the time series - maybe I forgot to tell you, but we're doing Physics as well!).
+
+First we plot it, and then we look at the equations:
+```{r, fig.width = 8,fig.asp=0.35}
+par(mar=c(4,4,2,1),mfrow=c(1,3))
+plot(2001:2025,diff(iceCream),xlab="",ylab="",type="l")
+title(xlab="Year",ylab="Tons",line=2.5)
+title(main="Delta (ice cream)",line=1)
+abline(h=0,col="black",lty=2)
+
+plot(2002:2025,diff(diff(iceCream)),xlab="",ylab="",type="l")
+title(xlab="Year",ylab="Tons",line=2.5)
+title(main="Delta^2 (ice cream)",line=1)
+abline(h=0,col="black",lty=2)
+```
+
+Now it is stationary. This is what I should be modelling. 
+
+Let's look at the equations. We will introduce some new notation:
+$$ B(y_t) = y_{t-1}$$
+The $B$ is called the backshift operator and all it does is add a lag to $y_t$ (observe the $t$ became $t-1$), Some books use $L$ instead, from Lag. 
+
+The differences can be expressed as:
+$$(1-B)y_t = y_t - By_t = y_t - y_{t-1} = z_t$$
+
+Second differences are quite simple:
+$$(1-B)^2y_t = (1-B)(1-B)y_t = (1-B)(y_y - By_t) = (1-B)(y_t - y_{t-1}) = (1-B)z_t = z_t - z_{t-1}$$
+
+I can also have seasonal differences to remove (stochastic) seasonality from my data. Suppose I have daily data (7-days in a week):
+$$(1-B_7)y_t = y_t - y_{t-7}$$
+
+I can chain as many differences as I want, level or seasonal, as it is evident from the second differences. 
+
+Before we go to the estimation implications, let me make a practical point. If you model the rate of change of the Swedish GDP, but the central bank or government needs the Swedish GDP you need to provide them a prediciton without the differences. This is done in the following way. If $\hat{z}_{t+1}$ is your forecast for you next period, the forecast in $y_t$ (not in differences) is:
+$$\hat{y}_{t+1} = y_t + \hat{z}_{t+1}$$
+The intuition is that since we are modelling the rate of change, our forecast is how the last observed value ($y_t$) will change in the next period, and that rate of change is $\hat{z}_{t+1}$.
+
+Let's look at the estimation issues now. I will use the time series we had before for the lag selection, but I will add on top of it a stochastic trend. 
+
+```{r }
+set.seed(4)
+y <- X[,1]
+y <- y + cumsum(rnorm(length(y),sd=4))
+par(mar=c(4,4,2,1))
+plot(y,xlab="",ylab="",type="l")
+
+```
+
+We construct the first five lags and repeat the modelling from before. First, let's look at the ACF and PACF, as these can give us a hint of what lags are important (at least in thi simplistic case). 
+```{r , fig.width = 8,fig.asp=0.7}
+
+# First the matrix to store the data
+p <- 5
+n <- length(y)
+dates <- rev(format(seq(Sys.Date(),by = "-1 month",length.out=n),"%Y-%m"))
+Z <- array(NA,c(n,p+1),dimnames=list(dates,c("Yt",paste0("Yt-",1:p))))
+# Create lags, starting for the actual series
+for (i in 1:(p+1)){
+  Z[,i] <- c(rep(NA,i-1),head(y,n-i+1))
+}
+
+par(mar=c(4,4,2,1),mfrow=c(2,2))
+acf(Z[,1],ylim=c(-1,1),main="")
+title(main="ACF (with trend)")
+pacf(Z[,1],ylim=c(-1,1),main="")
+title(main="PACF (with trend)")
+acf(X[,1],ylim=c(-1,1),main="")
+title(main="ACF (without trend - as before)")
+pacf(X[,1],ylim=c(-1,1),main="")
+title(main="PACF (without trend - as before)")
+
+```
+
+Above are the new ones, below are what we had from the analysis before. Note how the wave in the ACF got "longer", the trend has impossed stronger correlations, just as the GDP and ice creams appeared correlated due to the trend. As these were spuriously correlated, so are these stronger correlations spurious. Also note that the signal in PACF (what lags are important) is now masked. 
+
+Let's estimate a regession on the data with the trend. First without selection. 
+```{r }
+Z <- Z[6:nrow(Z),]
+Z <- data.frame(Z)
+summary(lm(Yt~.,data=Z))
+```
+For comparison, without the trend we had:
+```{r }
+summary(lm(Yt~.,data=X))
+```
+Look at how different the coefficients are. The model is quite lost, as the storng autocorrelations confuse it.
+
+Below we ask AIC to recover the correct model:
+```{r }
+Z <- data.frame(Z)
+fitStep <- step(lm(Yt~.,data=Z))
+print(summary(fitStep))
+```
+It actually managed, but that is by no means what we would typically expect. 
+The problem gets more complicated if we have to deal with additional types of regressors, e.g., moving average terms, or other explanatory variables. I think it is fair to say when we mix ARIMA components (so, autoregressions and moving averages) with explanatory variables, we don't really know how to solve it optimally consistently, and kind of wing it. What should we difference? What should we leave as is? (I am exagerrating a bit, but to be able to answer this with statistical theory you need to put up with statistics and me for much more, as we would need to dive deeper in econometric theory.) Here is a simple heuristic. **Make your target variable stationary. For the explanatory variables think if it would be the rate of change or the series as is that would connect with the stationary target variable.** If I am modelling the rate of change of the GDP of Sweden, is it unemployment or the rate of change of unemployment? If unsure, prefer to gamble for more stationary series than not. **Stuctural components like seasonality or trend should be modelled explcitly as such, and not using spurious correlations.** We will see how this is easy to do with ARIMA (and regression).
+
+At this point we have kind of seen two of the components of ARIMA, the AR and the I. By the way it is called I because people are pretentious. "i" from integration, as in continuous time domain, we have derivatives and integrals. Here is some random trivial. Before I came to Sweden I studied in Lancaster, UK. One of the guys who invented ARIMA, Jenkins, was a professor there, long dead before me, but his PhD students who actually did the first computer implementations were still active professors there. You get a very different understand when you get to talk to the people who actually wrote the thing - not deeper, just realising that everybody is winging it! Their theory of specifying the ARIMA models is veryeelgant mathematically, but nowadays largerly considered obsolete, with AIC having dominated. But all these, when we go into the full ARIMA model. 
+
+## Logarithmic transformations
+One last thing to cover in this document. What do logarithms do for us and why you will face them a lot when modelling financial time series. 
+
+Everything we have seen so far is linear, but there is a massive class of nonlinear models. One of the most useful nonlinearities is to model things proportionally. Let me give you an example. Suppose I am running an promotional campaign from my ice creams in Stockholm and in Karlstad. The centre of Stockholm has just under 1 million residents. The city of Karlstad is just under 70 000 people. I can write a model for my sales as:
+$$ Sales = \beta_0 + \beta_1 \times promotion + autoregresions + \ldots $$
+Here, let promotion be an indicator variable that is equal to 1 when the promotion is happening, or 0 when it is not happening. 
+Let's assume I get a significant uplift in sales due to promotions, say 50%. In Stockholm $\beta_1 = 500 000$. If I would apply the same model in Karlstad, I would get silly forecasts, as I would forecast that more people than the full population would buy ice cream. Commendable effort Karlstadians, but will probably be a bad forecast. I would like though to have a model that can cover more cities, because then I can have more data, and then I can estimate my model better (think of the degrees of freedom increasing, giving us better estimates for the coefficients), Instead of modelling the effect as additive (linear), I could model it as multiplicative (nonlinear). Very simplified:
+$$ Sales = (stuff) \times promotion^{\beta_1} $$
+This model should estimate the 50% increase and be globally applicable to both Stockholm and Karlstad. 
+
+I mentioned when I was going over likelihood that multiplications complicate things for us. Instead of modelling the data in their raw form, we can calculate their logariths, Remember that
+$$log(xy) = log(x) + log(y)$$
+and 
+$$log(x^p) = p log(x)$$
+So their function is to transform multiplicative (proportional) relationships to additive. Once we have estimated and built the model in the additive representation, we can take the exponent of the predition to return it back to the original scale. 
+
+Here is an example of another multiplicative relationship that can be modelled very easily with logarithms. At the beggining we show the Air Passengers time series. Here it is plotted as is, and in logarithms. 
+
+```{r fig.width=8,fig.asp=0.4}
+par(mar=c(4,4,2,1),mfrow=c(1,2))
+y <- AirPassengers
+plot(y,xlab="",ylab="")
+title(xlab="Year",ylab="000s Passengers",line=2.5)
+title(main="Air Passengers (US total)")
+
+plot(log(y),xlab="",ylab="")
+title(xlab="Year",ylab="log(000s Passengers)",line=2.5)
+title(main="log(Air Passengers) (US total)")
+```
+
+The raw data exhibit what we call a multiplicative seaonality. As the trend increases there are more passengers, the differences between summer and winter passenger traffic increases with the increase in the number of passengers. (This is fairly common, human activities are proporional, the more the people, the variability we see due to seasonality, promotions, disruptions, etc.). Look at the log variant of the time series. The seasonal width has stabilised. Techinically we disconnected it from the ammount of passengers. If the model was passengers*seasonality, now it became log(passengers) + log(seasonality), simplifying the modelling. In fact, neither regression, nor ARIMA can model correctly the raw AIrPassenger data, because of this nonlinearity. So we typically use logarithms or similar transformation. 
+
+Let me connect it to financial data. We are often interested in modelling returns of an asset. Return is how the value has changed from the previous period. This is the first differences we looked at before. If we think about multiple assets, we are interested in the percentage return, so that we can compare and decide how to invest. If we were looking at the value of an asset in SEK, small gains in expensive assets would look like a lot of SEK, while substantial assets in cheap assets would look insignificant, which is very misleading. It is the size of the investment times gain in value that matters. If I can buy a ton of the cheap asset and it increases value substnatially, that is a much better option than buying a few of the expensive asset that increase just a little bit. We care about percentage growth. This is proportion, so it has just the logarithmic differences.
+
+Final point. If the size of the seasonality changes proportionally, the variability of the time series increases, i.e., the uncertainty increases. Logarithms get everything "under control". Logarithms change the variability of the time series. Quite often a time series that appears to be heteroscedastic and therefore much harder to model, becomes homoscedastic (equal variance across time) and much easier to model with logarithms. 
+
+As an example, I will plot the differences of the Air Passengers without and with logarithms. 
+```{r fig.width=8,fig.asp=0.4}
+par(mar=c(4,4,2,1),mfrow=c(1,2))
+y <- AirPassengers
+plot(diff(y),xlab="",ylab="")
+title(xlab="Year",ylab="000s Passengers",line=2.5)
+title(main="Differences Air Passengers (US total)")
+abline(h=0,lty=2)
+
+plot(diff(log(y)),xlab="",ylab="")
+title(xlab="Year",ylab="log(000s Passengers)",line=2.5)
+title(main="Differences log(Air Passengers) (US total)")
+abline(h=0,lty=2)
+```
+See how the differences of the log(Air Passengers) have a much better behaved (homoscedastic) variance?
+
+Okay final final point, we call them log-differences, but what we calculate is differences of logs. Logarithms of zero is -infinity, and there are no logarithms of negative numbers. As the plots above exemplify, differences will give you negative numbers (when the raw data decreases). So, we first take the logarithm and then apply differences. 
+
+**Done!**
