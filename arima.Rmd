@@ -1,0 +1,1023 @@
+---
+title: "Mila's fun with ARIMA!"
+author: ''
+date: "`r Sys.Date()`"
+output:
+  html_document: 
+  mathjax: "default"
+pdf_document: default
+---
+  
+```{r setup, include=FALSE}
+library(RColorBrewer)
+library(forecast)
+library(plotly)
+
+cmp1 <- brewer.pal(7,"Set1")
+cmp2 <- brewer.pal(7,"Pastel1")
+
+# Global options for all chunks
+knitr::opts_chunk$set(
+  echo = FALSE,          # Hide code by default
+  warning = FALSE,       # Hide warnings
+  message = FALSE,       # Hide messages
+  fig.width = 5,         # Base width in inches
+  fig.asp = 0.618,       # Golden ratio (height/width)
+  fig.align = "center"   # Center plots on the page
+  # dev = "png", 
+  # dev.args = list(type = "cairo-png"),
+  # antialias = "subpixel"
+)
+```
+
+# What is an ARIMA?
+
+ARIMA was primarily invested to make students and researchers suffer. 
+Other people consider it a time series model. Oce you have mastered it, you can 
+choose which is the right interpretation!
+
+ARIMA stards for Autoregressive (AR) Integrated (I) Moving Average (MA) model.
+Its three parts can be understood separatelly. We have already seen somewhat the AR 
+(regression on lags of the target variable) and the I part, as differencing to 
+make a time series stationary (remove trends and seasonality).
+
+Here, we will start from the MA part. Instead of going directly to the ARIMA formulation,
+we will try to understand what MA means and particularly MA of different orders
+(how may terms we incude there), before going into ARIMA. 
+
+# Predictive models are just fancy averages
+Recall that all data are **structure + noise**. A way to filter out the random part (noise)
+is to take averages. Why is that? Since noise is random, sometimes it will be over and sometimes
+under the conditional expectation (the local structure we are trying to model, and
+local as based in on all information up until now, e.g., we are making a prediction for 
+a given price X or a specific month).
+
+In the simplest case, the structure may be just some (stochastic) level and noise. What is **stochastic**?
+Stochastic is a process (a time series) that evolves over time by incorporating some of the randomness into it. This is in constrast to **Deterministic** that the noise does not interact with the stucture of the data. 
+
+Here is an example of a deterministic models:
+$$y_{t+1} = \alpha t + \varepsilon_t$$
+The next value $y_{t+1}$ depends on $\alpha t$ so a coefficient $\alpha$ and time (imagine it as a constantly increasing structure, where at every period it increases by $\alpha$) and on top of it some noise, the $\varepsilon_t$ part.
+
+Here is a stochastic process (I will be using process and model as the same thing here):
+$$y_{t+1} = \alpha y_t + \varepsilon_t$$
+This reads: the next value $y_{t+1}$ depends on the previous value multiplied by some coefficient $\alpha y_t$ and some noise ($\varepsilon_t$), To uderstand why this is very different, let's write the same model for predicting the value of $y_t$ (the previous one):
+$$y_{t} = \alpha y_{t-1} + \varepsilon_{t-1}$$
+Now let's replace this in the previous equation (where we had $y_t$ we put the $y_{t} = \alpha y_{t-1} + \varepsilon_{t-1}$):
+$$y_{t+1} = \alpha (\alpha y_{t-1} + \varepsilon_{t-1}) + \varepsilon_t$$
+We could work out the calculation, but this is not important here. What is important is that the noise from period $t-1$, the $\varepsilon_{t-1}$ is influencing the current value $y_t$ and the future value $y_{t+1}$. If we continue this logic for other past periods, we will see that the future value depends (is conditional) on all past noise. We call this stochastic, where the structure is influenced by the noise. 
+
+Let's visualise the two cases, to better see how they may look.
+```{r, fig.width=8,fig.asp=0.4}
+# Visualise what data are
+set.seed(1)    # Lock the random number generator
+sigma <- 4        # Standard deviation
+n <- 10           # Sample size
+
+par(mar=c(4,4,2,1),mfrow=c(1,2))
+# SImulate common noise for the two series
+noise <- rnorm(n,sd=sigma)
+# Deterministic case
+ydet <- 10 + 2*(1:n) + noise
+plot(1:n,ydet,type="o",xlab="",ylab="",pch=20)
+lines(1:n,2*(1:n)+10,col=cmp1[1],lty=2)
+title(xlab="Period",ylab="Observation",line=2.5)
+title(main="Deterministic",line=1)
+legend("bottomright",c("Observations","Structure"),col=c("black",cmp1[1]),lty=c(1,2),bty="n")
+# Stochastic case
+noise <- rnorm(n,sd=sigma)
+ysto <- rep(0,n+1)
+ysto[1] <- 20
+for (i in 1:n){
+  ysto[i+1] <- 0.4*ysto[i] + noise[i]
+}
+ysto <- ysto[-1] # remove nitial value}
+plot(1:n,ysto,type="o",xlab="",ylab="",pch=20)
+lines(1:n,ysto-noise,col=cmp1[1],lty=2)
+title(xlab="Period",ylab="Observation",line=2.5)
+title(main="Stochastic",line=1)
+legend("topright",c("Observations","Structure"),col=c("black",cmp1[1]),lty=c(1,2),bty="n")
+
+```
+In the deterministic case the structure is unaffected by the noise. It is a straight line,increasing every period by 2. In the stochastic case, the structure changes over time based on the noise. I set the parameters so that 40% of the noise goes into the next $y_t$. Simply put, the structure is not fixed, but it evolves over time. 
+
+Almost everything you will deal with in your courses, and in general with business data, is stochastic. Regression (and ARIMA) are so fundamental, because they can deal with stochastic data, i.e., construct the required conditional averages. 
+
+### Random walk (or Naive method)
+
+Back to building simple predictions. The simple forecast that one can use (and typically the best forecast for stock and commodity prices) is the random walk (also known as the naive forecast). This model says:
+$$ \hat{y}_{t+1} = y_t$$
+That is, the future forecast is the same as the last observation. If I wanted to do multiple step ahead forecasts, so the values for $\hat{y}_{t+2}$, $\hat{y}_{t+2}$, and so on, these would all be equal to the last observation as this is the latest information we have (what the model is conditional one - depends on).
+
+Let's see how this looks like. 
+```{r }
+# Visualise what data are
+set.seed(3)      # Lock the random number generator
+sigma <- 4        # Standard deviation
+n <- 30           # Sample size
+h <- 5
+par(mar=c(4,4,2,1))
+
+# Create some data
+y <- 20 + rnorm(n,sd=sigma)
+# Construct forecast for the next h periods
+yhat <- rep(tail(y,1),h)
+
+plot(1:n,y,type="o",xlab="",ylab="",pch=20,xlim=c(1,n+h))
+abline(v=n+0.5,col="grey")
+lines(1:n,rep(20,n),col=cmp1[2],lty=2)
+lines((n+1):(n+h),yhat,col=cmp1[1],lwd=2)
+title(xlab="Period",ylab="Observation",line=2.5)
+legend("bottomleft",c("Data","Foreast","Structure"),col=c("black",cmp1[1:2]),lty=c(1,1,2),horiz=TRUE,cex=0.8)
+
+```
+The forecast as expected is just repeating the last value. I have also plotted the "unknown" structure with the dashed blue line. A forecast should ideally replicate the structure into the future and none of the noise, as noise is unpredictable. (Remember the overfitting part in the previous set of notes.) What is happening here? The forecast is equal to the last observation. The last observation is structure + noise, so the noise is fully copied into the future. This is not great, as the noise is unforecastable. 
+
+Recall that we argud that data should be seen as distributions. The noise in the last data point is ranodm. In pricniple, it could be anywhere, this is just one random draw. We can simulate that by looking at how other observations behave. Below is how the forecasts would look like from each observation (imagine that these would be the forecasts as we would be getting more and more data). 
+```{r }
+# Visualise what data are
+set.seed(3)      # Lock the random number generator
+sigma <- 4        # Standard deviation
+n <- 30           # Sample size
+h <- 5
+par(mar=c(4,4,2,1))
+
+# Create some data
+y <- 20 + rnorm(n,sd=sigma)
+
+plot(1:n,y,type="o",xlab="",ylab="",pch=20,xlim=c(1,n+h))
+abline(v=n+0.5,col="grey")
+lines(1:n,rep(20,n),col=cmp1[2],lty=2)
+for (i in 1:n){
+  lines((i+1):(i+h),rep(y[i],h),col=cmp1[1],lwd=2)  
+}
+title(xlab="Period",ylab="Observation",line=2.5)
+legend("bottomleft",c("Data","Foreast","Structure"),col=c("black",cmp1[1:2]),lty=c(1,1,2),horiz=TRUE,cex=0.8)
+
+```
+As you can see, this is very erratic. It hardly follows the underlying sturcture of the data. 
+
+Since the random walk (naive) is actually a quite important model, let us understand this a bit more before we proceed. Before I wrote the equation for its forecast, the $\hat{y}_{t+1}$. Let's write its equation for its model (that includes the noise):
+$$ y_{t+1} = y_t + \varepsilon_t$$
+We move the $y_t$ to the left.hand side:
+$$ y_{t+1} - y_t = \varepsilon_t$$
+We can read this as "the change of the time series between two periods only depends on noise". In simple terms, when the random walk is the model of choice we assume that there is no structure in the data - or at least no structure we can detect. This is also what make the random walk a very potent model for financial forecasting. All the actions of the different actors in the market muddle the signal so much, that all we can see is noise. (This is not the phrasing of the efficient market hypothesis, but they are equivalent.)
+
+As an aside, in predictive modelling the random walk (or the naive method) is always a very important benchmark. A more complex model should be preferred only if it can outperform the random walk. Otherwise it is overfit and is not expected to forecast well. 
+
+Before we proceed one more thing to keep in mind about visualising models and predictions. Above I plotted all the random walk forecasts for five periods ahead. Now, let's plot the model fit instead, that is just the next period and connect them with a line - this is a quite common visualisation in textbooks. 
+```{r }
+# Visualise what data are
+set.seed(3)      # Lock the random number generator
+sigma <- 4        # Standard deviation
+n <- 30           # Sample size
+h <- 5
+par(mar=c(4,4,2,1))
+
+# Create some data
+y <- 20 + rnorm(n,sd=sigma)
+
+plot(1:n,y,type="o",xlab="",ylab="",pch=20,xlim=c(1,n+h))
+abline(v=n+0.5,col="grey")
+lines(1:n,rep(20,n),col=cmp1[2],lty=2)
+lines(2:(n+1),y,col=cmp1[1])
+lines((n+1):(n+h),rep(y[n],h),col=cmp1[1],lwd=2)  
+title(xlab="Period",ylab="Observation",line=2.5)
+legend("bottomleft",c("Data","Foreast","Structure"),col=c("black",cmp1[1:2]),lty=c(1,1,2),horiz=TRUE,cex=0.8)
+
+```
+This plot could be understood as if the random walk is doing something smart, as it appears to be following around the time series points. This is a misconception though, and is reinforced by artificially joining the line between the points. Here is a more honest view:
+```{r }
+# Visualise what data are
+set.seed(3)      # Lock the random number generator
+sigma <- 4        # Standard deviation
+n <- 30           # Sample size
+h <- 5
+par(mar=c(4,4,2,1))
+
+# Create some data
+y <- 20 + rnorm(n,sd=sigma)
+
+plot(1:n,y,type="o",xlab="",ylab="",pch=20,xlim=c(1,n+h))
+abline(v=n+0.5,col="grey")
+lines(1:n,rep(20,n),col=cmp1[2],lty=2)
+points(2:(n+1),y,col=cmp1[1],pch=20)
+lines((n+1):(n+h),rep(y[n],h),col=cmp1[1],lwd=2)  
+title(xlab="Period",ylab="Observation",line=2.5)
+legend("bottomleft",c("Data","Foreast","Structure"),col=c("black",cmp1[1:2]),lty=c(1,1,2),horiz=TRUE,cex=0.8)
+
+```
+Hopefully now it is more evident that the model is just copying around anything it sees, including all the noise in the data. The misconception here is happening because humans tend to look for co-movement (this is correlation) between the lines, and not the vertical distance at each period, which is the error. In reality, we are today and we need a forecast for tomorrow. What we need to get is minimise the distance between tomorrow's observation and our forecast - that is the vertical distance (it may help to recall the ice cream example from the previous set of notes). 
+
+Let's proceed!
+
+### Average
+If we want to recover the structure of the time series, we need to filter out the noise from the data. In this simplistic example the structure is very simple (no trends, seasonalities, special events, and so on), so we only need to somehow cancel the noise. Recall, that since noise is random, and some times above or below the structure, we can simply average it out. The above and below noise will cancel out. 
+
+Below we have a plot of the average as a model fit and a forecast. The fit is not a straight line thorughout the sample, as the calculation of the average only sees the observations up to its time period (it is conditional on all information up to that time period).
+
+```{r }
+# Visualise what data are
+set.seed(3)      # Lock the random number generator
+sigma <- 4        # Standard deviation
+n <- 30           # Sample size
+h <- 5
+par(mar=c(4,4,2,1))
+
+# Create some data
+y <- 20 + rnorm(n,sd=sigma)
+
+plot(1:n,y,type="o",xlab="",ylab="",pch=20,xlim=c(1,n+h))
+abline(v=n+0.5,col="grey")
+lines(1:n,rep(20,n),col=cmp1[2],lty=2)
+lines(2:(n+1),cumsum(y)/(1:n),col=cmp1[1],pch=20,type="o")
+lines((n+1):(n+h),rep(mean(y),h),col=cmp1[1],lwd=2)  
+title(xlab="Period",ylab="Observation",line=2.5)
+legend("bottomleft",c("Data","Foreast","Structure"),col=c("black",cmp1[1:2]),lty=c(1,1,2),horiz=TRUE,cex=0.8)
+
+```
+Initially the average is based on a single observation, so there is not much averaging that can happen. As we get more and more observations the average is able to filter a large chunk of the noise and eventually ends up fluctuating around the correct structure. The forecast is also much closer where it should be (around 20 that is the structure, see the dashed blue line). Is is not perfect as an average of only 20 periods is not sufficient to cancel out the noise completely. As an example, below is the same case for a longer time series. 
+
+```{r, fig.width=10, fig.asp=0.309}
+# Visualise what data are
+set.seed(3)      # Lock the random number generator
+sigma <- 4        # Standard deviation
+n <- 60           # Sample size
+h <- 5
+par(mar=c(4,4,2,1))
+
+# Create some data
+y <- 20 + rnorm(n,sd=sigma)
+
+plot(1:n,y,type="o",xlab="",ylab="",pch=20,xlim=c(1,n+h))
+abline(v=n+0.5,col="grey")
+lines(1:n,rep(20,n),col=cmp1[2],lty=2)
+lines(2:(n+1),cumsum(y)/(1:n),col=cmp1[1],pch=20,type="o")
+lines((n+1):(n+h),rep(mean(y),h),col=cmp1[1],lwd=2)  
+title(xlab="Period",ylab="Observation",line=2.5)
+legend("bottomleft",c("Data","Foreast","Structure"),col=c("black",cmp1[1:2]),lty=c(1,1,2),horiz=TRUE,cex=0.8)
+
+```
+Collecting more "above" and "below" noise, this average manages to filter our the randomness and almost perfectly recover the underlying structure. 
+
+So job done? Unfrotunately not. As we said earlier on, time series are stochastic, i.e., shit happens. We should not expect anything as nice as a flat straight line structure in reality. 
+
+Look at the following two examples, in the first we have a so-called level shift or structural break (the level of the time series changes to a new one and stays there), and in the second we have a strong outlier, for instance the impact of some promotional activity, etc.
+
+```{r, fig.width=10, fig.asp=0.309}
+# Visualise what data are
+set.seed(3)      # Lock the random number generator
+sigma <- 4        # Standard deviation
+n <- 30           # Sample size
+h <- 5
+
+par(mar=c(4,4,2,1),mfrow=c(1,2))
+
+# Create some data
+y <- 20 + rnorm(n,sd=sigma)
+
+y1 <- y
+y1[(n-8):n] <- y1[(n-8):n] + 10
+plot(1:n,y1,type="o",xlab="",ylab="",pch=20,xlim=c(1,n+h))
+abline(v=n+0.5,col="grey")
+lines(1:n,rep(20,n),col=cmp1[2],lty=2)
+lines(2:(n+1),cumsum(y1)/(1:n),col=cmp1[1],pch=20,type="o")
+lines((n+1):(n+h),rep(mean(y1),h),col=cmp1[1],lwd=2)  
+title(xlab="Period",ylab="Observation",line=2.5)
+#legend("topleft",c("Data","Foreast","Structure"),col=c("black",cmp1[1:2]),lty=c(1,1,2),horiz=TRUE,cex=0.8)
+title(main="Average",line=1)
+
+y2 <- y
+y2[n] <- y2[n] + 20
+plot(1:n,y2,type="o",xlab="",ylab="",pch=20,xlim=c(1,n+h))
+abline(v=n+0.5,col="grey")
+lines(1:n,rep(20,n),col=cmp1[2],lty=2)
+lines(2:(n+1),cumsum(y2)/(1:n),col=cmp1[1],pch=20,type="o")
+lines((n+1):(n+h),rep(mean(y2),h),col=cmp1[1],lwd=2)  
+title(xlab="Period",ylab="Observation",line=2.5)
+legend("topleft",c("Data","Foreast","Structure"),col=c("black",cmp1[1:2]),lty=c(1,1,2),horiz=TRUE,cex=0.8)
+title(main="Average",line=1)
+
+```
+What is happening here? The persistent change (the level shift in the plot on the left) confuses the average. The case in the right, the outlier, does not bother the average much. The outlier is in the avergae by 1/30 (where 30 is the number of observations), so most of its effect is cancelled. out. 
+
+For constrast, let's look at how the random walk would deal with these series. 
+```{r, fig.width=10, fig.asp=0.309}
+# Visualise what data are
+set.seed(3)      # Lock the random number generator
+sigma <- 4        # Standard deviation
+n <- 30           # Sample size
+h <- 5
+
+par(mar=c(4,4,2,1),mfrow=c(1,2))
+
+# Create some data
+y <- 20 + rnorm(n,sd=sigma)
+
+y1 <- y
+y1[(n-8):n] <- y1[(n-8):n] + 10
+plot(1:n,y1,type="o",xlab="",ylab="",pch=20,xlim=c(1,n+h))
+abline(v=n+0.5,col="grey")
+lines(1:n,rep(20,n),col=cmp1[2],lty=2)
+lines(2:(n+1),y1,col=cmp1[1],pch=20,type="o")
+lines((n+1):(n+h),rep(y1[n],h),col=cmp1[1],lwd=2)
+title(xlab="Period",ylab="Observation",line=2.5)
+#legend("bottomleft",c("Data","Foreast","Structure"),col=c("black",cmp1[1:2]),lty=c(1,1,2),horiz=TRUE,cex=0.8)
+title(main="Random Walk",line=1)
+
+y2 <- y
+y2[n] <- y2[n] + 20
+plot(1:n,y2,type="o",xlab="",ylab="",pch=20,xlim=c(1,n+h))
+abline(v=n+0.5,col="grey")
+lines(1:n,rep(20,n),col=cmp1[2],lty=2)
+lines(2:(n+1),y2,col=cmp1[1],pch=20,type="o")
+lines((n+1):(n+h),rep(y2[n],h),col=cmp1[1],lwd=2)
+title(xlab="Period",ylab="Observation",line=2.5)
+legend("topleft",c("Data","Foreast","Structure"),col=c("black",cmp1[1:2]),lty=c(1,1,2),horiz=TRUE,cex=0.8)
+title(main="Random Walk",line=1)
+
+```
+See how the random walk is able to adjust quickly to the new level (left plot) but is completely thrown away by the outlier (right plot) - it should forecast close to the underlying stucture, not just copy the outlier. The random walk remembers only the last period, while the average remembers everything (the process has infinite memory in statistical terms). 
+
+An in-between solution might be best, the so called **moving average**, where we build an average, but with a more limited memory. 
+
+### Moving Average
+First, this is not the moving average in ARIMA! Why not have two things being called "moving average" to make your life simpler? 
+
+The moving average works by calculating an average of the last $k$ periods and basing the forecast on that:
+$$ \hat{y}_{t+1} = \frac{1}{k}\sum_{i=1}^{k}y_{t-i}$$
+
+Below are some example moving averages for our two cases. Let's use the acronym MA(k) for the forecasts, so MA(2) is the moving average of 2 periods. 
+
+```{r, fig.width=10, fig.asp=0.309}
+# Visualise what data are
+set.seed(3)      # Lock the random number generator
+sigma <- 4        # Standard deviation
+n <- 30           # Sample size
+h <- 5
+
+mav <- function(y,k){
+  l <- length(y)
+  yout <- mean(tail(y,k))
+  yin <- rep(NA,n)
+  for (i in k:n){
+    yin[i] <- mean(y[(i-k+1):i])
+  }
+  return(list(yin=yin,yout=yout))
+}
+
+
+par(mar=c(4,4,2,1),mfrow=c(1,2))
+
+# Create some data
+y <- 20 + rnorm(n,sd=sigma)
+
+y1 <- y
+y1[(n-8):n] <- y1[(n-8):n] + 10
+plot(1:n,y1,type="o",xlab="",ylab="",pch=20,xlim=c(1,n+h))
+abline(v=n+0.5,col="grey")
+lines(1:n,rep(20,n),col=cmp1[2],lty=2)
+for (j in 1:4){
+  temp <- mav(y1,c(2,4,8,16)[j])
+  lines(2:(n+1),temp$yin,col=(cmp1[-2])[j],pch=20,type="o")  
+  lines((n+1):(n+h),rep(temp$yout,h),col=(cmp1[-2])[j],lwd=2)
+}
+title(xlab="Period",ylab="Observation",line=2.5)
+legend("topleft",c("MA(2)","MA(4)","MA(8)","MA(16)"),col=cmp1[c(1,3,4,5)],lty=1,ncol=2,cex=0.8)
+title(main="Moving Average",line=1)
+
+y2 <- y
+y2[n] <- y2[n] + 20
+plot(1:n,y2,type="o",xlab="",ylab="",pch=20,xlim=c(1,n+h))
+abline(v=n+0.5,col="grey")
+lines(1:n,rep(20,n),col=cmp1[2],lty=2)
+for (j in 1:4){
+  temp <- mav(y2,c(2,4,8,16)[j])
+  lines(2:(n+1),temp$yin,col=(cmp1[-2])[j],pch=20,type="o")  
+  lines((n+1):(n+h),rep(temp$yout,h),col=(cmp1[-2])[j],lwd=2)
+}
+title(xlab="Period",ylab="Observation",line=2.5)
+legend("topleft",c("MA(2)","MA(4)","MA(8)","MA(16)"),col=cmp1[c(1,3,4,5)],lty=1,ncol=2,cex=0.8)
+title(main="Moving Average",line=1)
+
+```
+
+First, let's understand what is going on in the left plot, with the level shift. The very long moving average, MA(16) is too slow to catch up to the new level. It remembers too many observations from before the level shift, and therefore the average is somewhere in the middle. As the moving average becomes shorter, it becomes faster in adjusting to the new level. The fastest, MA(2), is not a good solution, because although it is very fast, it is too short to filter any of the noise of the time series. Look how the red line, MA(2), drops quickly close to the forecast, influenced primarily by the randomness in the data. MA(4) and MA(8) do a better job at being both reactive to new data and cancelling our randomness (we would prefer MA(8) as it is reactive enough and the longer average, so it cancels out more noise - but that is not relevant to the point here), 
+
+Let's look at the plot on the right. The longer the average, the less impactful is the outlier. For the case of MA(2) the outlier shifts the forecast upwards by 50% as it is given a weight of 1/2 (the average is only two observations long). For MA(16) the impact is minimal, only 1/16. 
+
+We can summarise the observations in the plots as: **the longer the average, the more it filters noise and is resistant to outliers, but becomes less reactive to changes in the data** (like the level shift). An analyst would have to tweak the length of the moving average depending on the data they try to model. 
+
+### Weighted moving average
+
+In general, the moving average tries to localise the calculation of the average (the conditional expectation). If this makes sense, then the next question is whether we should give all observations in the moving average equal weight. Take for example the MA(8). Do we give all periods weight of 1/8, or do we give to more recent observations more weight? Imagine we were modelling monthly data. That would suggest that last month and eight months ago are equally important for forecasting the next month. Probably this is not true, and we need to give more weight to recent information. 
+
+If I have a moving average of $k$ periods, I need to set $k$ weights. Obvioulsy the computer does that for me. However, recall our regression discussion. As the number of coefficents increase the model has a higher chance to start overfitting to the data. (It is the ratio of data points to number of coefficients, or the degrees of freedom we saw in regression, or more generally the model complexity we saw in bias-variance decomposition.)
+
+In general, the weighted moving average is a good idea, but fails due to the number of parameters it requires. However, the ability to give the more recent information higher importance is useful, so we need to find a away to do this, without having to set up so many different coefficients. 
+
+Before we proceed, it is helpful to describe how these weights should look like. Let's start from a simple unweighted average. If it is an average of four periods, every observation will have a weight of 1/4. The sum of the weights will be 1/4 + 1/4 + 1/4 + 1/4 = 1. The important bit here is that they sum up to 1. If they were less than one, then the average would end up being smaller than what it should be (biased downwards), and if it wwas more than 1, it would end up being more than what it should (biased upwards). Think it as how many parts I need to combine to get one whole. Another thing we can observe is that all weights are non-negative. For instance, we do not consider weights of -1/4. The reasoning for both these properties (**non-negative weights and the sum of weights equals to 1**) is that we want the resulting average to be in the middle of the values we combine, as we typically understand an average. If we allow for negative weights or unconstrained sums, I can easily place the average far beyoond the observations that go into calculating it. (Averages that obey these rules are called **convex combinations**.)
+
+### Exponential smoothing
+We will use the idea of the weighted moving average, but instead we will use a simple heuristic to set up all weights. Let's impose the following rule. The combination must be convex, so that we get a "middle" of the time series (a conditional expectation) and that every time we will use 50% of the weights that we have left over (from the complete sum of weights = 1). Starting from the most recent observation at period $t$, we get:
+
+- For period $t$ we have not used any weights, so we have 1 (or 100%) to use. We take 50% of that, so we have a weight of 0.5.
+
+- For period $t-1$ we have used 0.5. We take 50% of that, and we have a weight of 0.25.
+
+- For period $t-2$ we have used 0.5+0.25=0.75, so we have 0.25 left. We take 50% of that. The weight now is 0.125.
+
+- For period $t-3$ we have used 0.875, so we are left with 0.125. We take 50% of that and we have 0.0625. 
+
+- For period $t-4$ we have 0.0625 leftover, we take 50% of it and get a weight of 0.03125.
+
+As the last weight is almost zero, we can stop here. What did we do with this heuristic? By only deciding the 50% we got all the weights, decreasing over time, and the length of the weighted moving average. We can use any percentage between 0% and 100% (so that the resulting weights are non-negative and sum up to 1). We will replace the 50% with a parameter, let's use $\alpha$. 
+
+The first weight is $1 \times \alpha$. If $\alpha = 0.5$, the weight would be 0.5 as before. The second weight is:
+$$ (1-\alpha) \times \alpha$$
+where $(1-\alpha)$ is calculating the leftover weight, and $\alpha$ is part we take now. Again if $\alpha = 0.5$, we would have (1-0.5)0.5 = 0.25, as before.  For the next weight we have:
+
+$$ (1 - a - (1-\alpha) \times \alpha)  \times \alpha$$
+
+So that is 1 minus what I have used, times $\alpha$. We have the first weight $\alpha$ and the second weight $(1-\alpha)\alpha$ Let's clean up the equation a bit (expand the inside parenthesis).
+$$ (1 -\alpha - \alpha + \alpha^2) \alpha $$
+which is 
+$$ (1 -2\alpha + \alpha^2) \alpha $$
+and remember that $(a-b)^2 = a^2 - 2ab + b^2$, so here we have:
+$$ (1 - 2\alpha + \alpha^2) \alpha  = (1-\alpha)^2\alpha$$
+Let's set $\alpha=0.5$ and we get the weight we are looking for, i.e., $(1-0.5)^2 0.5 = 0.5^2 0.5 = 0.125$. The next weight if we work out the calculation will be $(1-\alpha)^3$. For the next the power will increase from 3 to 4 and so on. Let's write the weighted moving average again:
+$$\hat{y}_{t+1} = (1-\alpha)^0\alpha y_t + (1-\alpha)^1\alpha y_{t-1} + (1-\alpha)^2\alpha y_{t-2} + \\
+(1-\alpha)^3\alpha y_{t-3} + (1-\alpha)^4\alpha y_{t-4} + ...$$
+Note that the exponent increases as we go further in the past. This gives the name to the model: Exponentially Weighted Moving Average (EWMA), but since the function of the moving average is to smooth a series (recall the figures above the the various averages, they are always smoother than the original data, as they always filter out some noise) it is more commonly called exponential smoothing.
+
+Trivia time: The guy who came up with idea of exponential smoothing was working in industry, and he decided to give it the name exponential smoothing, as it is arguably catchier than exponentially weighted moving average. This was more or less in the same period that two academics came up with the ARIMA for Autoregressive Intergreated Moving Average process. They clearly did not care if the name was catchy (or if it even makes sense for that matter!). The two different starting points for these is also the reason why we have the name Moving Average for two different things (i.e., because academics are stubborn!)
+
+Before we look at how exponential smoothing forecasts look like, let us plot how the weights look like for some different values of $\alpha$ for the different lags of $y_t$ (lags is how many periods in the past).
+```{r}
+library(abind)
+par(mar=c(4,4,2,1))
+
+alpha <- seq(0.1,0.9,0.2)
+maxlag <- 10
+weights <- lapply(1:length(alpha), function(x){(1-alpha[x])^((1:maxlag)-1)*alpha[x]})
+weights <- abind(weights,along=2)
+
+plot(NA,NA,type="o",xlab="",ylab="",xlim=c(1,maxlag),ylim=c(0,1))
+for (i in 1:length(alpha)){
+  lines(1:maxlag,weights[,i],col=(cmp1[c(-2,-6)])[i],type="o",pch=20)
+}
+title(xlab="Lag of y",ylab="Weight",line=2.5)
+title(main="Distribution of weights over lags of y",line=1)
+legend("topright",paste0("a=",alpha),col=cmp1[c(-2,-6)],lty=1,ncol=2,cex=0.8)
+```
+For large values of $\alpha$ most of the weights are used up in the few first lags. When $\alpha$ are smaller, the initial weights are smaller, but there is more weight to distribute to the following lags. This results in longer effective averages. Look for instance the values for $\alpha = 0.1$. The weights are $0.1, 0.09, 0.081, 0.0728, ...$ . The values for $\alpha = 0.9$ are $0.9, 0.09, 0.009, 0.0009, ...$. The latter decrease much more aggressively. In practice, since we want to filter out the noise in the data, we want low values, so that the effective averages (have enough observations with non-negligible weights) are enough to filter some noise. In principle, the averages are infinite in length, but the decreasing weights makes the impact of any observations far in the past to be minimal. 
+
+Here are some examples of how exponential smoothing works for the series we saw before:
+```{r, fig.width=10, fig.asp=0.309}
+# Visualise what data are
+set.seed(3)      # Lock the random number generator
+sigma <- 4        # Standard deviation
+n <- 30           # Sample size
+h <- 5
+
+library(forecast)
+
+par(mar=c(4,4,2,1),mfrow=c(1,2))
+
+# Create some data
+y <- 20 + rnorm(n,sd=sigma)
+
+y1 <- y
+y1[(n-8):n] <- y1[(n-8):n] + 10
+plot(1:n,y1,type="o",xlab="",ylab="",pch=20,xlim=c(1,n+h))
+abline(v=n+0.5,col="grey")
+alpha <- seq(0.1,0.9,0.2)
+for (i in 1:length(alpha)){
+  fit <- ets(y1,model="ANN",alpha=alpha[i])
+  frc <- forecast(fit,h=h)$mean
+  lines(1:n,fit$fitted,col=(cmp1[c(-2,-6)])[i],pch=20,type="o")  
+  lines((n+1):(n+h),frc,col=(cmp1[c(-2,-6)])[i],lwd=2)
+}
+title(xlab="Period",ylab="Observation",line=2.5)
+legend("topleft",paste0("a=",alpha),col=cmp1[c(-2,-6)],lty=1,ncol=2,cex=0.8)
+title(main="Exponntial smoothing",line=1)
+
+y2 <- y
+y2[n] <- y2[n] + 20
+plot(1:n,y2,type="o",xlab="",ylab="",pch=20,xlim=c(1,n+h))
+abline(v=n+0.5,col="grey")
+alpha <- seq(0.1,0.9,0.2)
+for (i in 1:length(alpha)){
+  fit <- ets(y2,model="ANN",alpha=alpha[i])
+  frc <- forecast(fit,h=h)$mean
+  lines(1:n,fit$fitted,col=(cmp1[c(-2,-6)])[i],pch=20,type="o")  
+  lines((n+1):(n+h),frc,col=(cmp1[c(-2,-6)])[i],lwd=2)
+}
+title(xlab="Period",ylab="Observation",line=2.5)
+legend("topleft",paste0("a=",alpha),col=cmp1[c(-2,-6)],lty=1,ncol=2,cex=0.8)
+title(main="Moving Average",line=1)
+
+```
+
+This intuition is important for ARIMA and GARCH: **Low value for the parameter, means lower starting weights and longer averages, filtering out more noise and being less sensitive to outliers**, **Low parameter values also make the model less reactive to new information.** **A well parameterised model strikes a balance in this trade-off between being reactive to new information (high parameter value) and filtering out noise (low parameter value).**
+
+It turns out that with exponential smoothing I can write the average in a much shorter form:
+$$\hat{y}_{t+1} = \alpha y_t + (1-\alpha) \hat{y}_{t}$$
+where $\hat{y}_{t}$ is the forecast for the last period. If we write the equation of the previous forecast (shifting the index $t$ accordingly in the equation above), replace it above, and keep repeating for older values, we will obtain the same exponential weighted moving average expression we had before. I will spare you the derivation, as this is not the point of interest here. 
+
+Hopefully, the intuition of how a weighted moving average works is clear now, as well as how we compress a model with many parameters (the weights) and choices (the length of the average and how these weights are distributed) into a rather short equation (the one above). Now, let's see how exponential smoothing connects with the MA (moving average) of ARIMA. 
+
+Recall the errors, $e_t$, are:
+$$ e_t = y_t - \hat{y}_t$$
+That is the difference between the observation and the prediction for a period $t$.
+
+I will use this and the equation of exponential smoothing to rewrite it:
+$$\hat{y}_{t+1} = \alpha y_t + (1-\alpha) \hat{y}_{t}$$
+Expand $(1-\alpha) \hat{y}_{t}$:
+$$\hat{y}_{t+1} = \alpha y_t + \hat{y}_{t} - \alpha \hat{y}_{t}$$
+Bring group together $\alpha y_t$ and $\alpha \hat{y}_{t}$
+$$\hat{y}_{t+1} = \hat{y}_{t} + \alpha(y_t -\hat{y}_{t})$$
+And note that the bit in the parenthesis is the forecast error:
+$$\hat{y}_{t+1} = \hat{y}_{t} + \alpha e_t$$
+So the forecast is the previous forecast, updated by $\alpha$ % of the last error. Remember we started by defining what a stochastic process is. What we have here is a stochastic process, where the forecast is influenced by the last observed bit of noise. 
+
+### Moving Average, ARIMA style
+
+So far we have been writing the equations for the forecasts, not the model (the noise is missing in our equations!). I will remove the "hats" so that I now talk about the observations and not the forecasts, and add the noise term $\varepsilon_t$.
+
+$$y_{t+1} = y_{t} + \alpha e_t + \varepsilon_t$$
+Before we proceed, let's understand what is the difference between errors $e_t$ and the term $\varepsilon_t$ that I have been calling noise. Last time I called this the "innovation term", alluding to the new infromation that is not part of the structure - stuff we just do not understand or have no way of knowing about. The error is coming from our model, and it captures past errors of the models. The innovation is external to the model, and is coming from the system we are trying to model. Even if our model would somehow have zero errors all the time, then $e_t = 0$ for all periods $t$, but the $\varepsilon_t$ would still be non-zero. No matter what we do, it will always be there, as it is external to our model. 
+
+Now I want you to recall the data differencing. We saw that when the data has trends it can be non-stationary. When a time series is non-stationary, it can cause spurious connections that can throw our models and forecasts off. When this happens we work with the differences of the data: $z_t = y_t - y_{t-1}$. We need the data to be stationary to be able to model them correctly with a regression, or any regression like model. 
+
+Let's return to the exponential smoothing model, and move the term $y_t$ to the left-hand side:
+$$y_{t+1} - y_{t} = \alpha e_t + \varepsilon_{t+1}$$
+$$z_{t} = \alpha e_t + \varepsilon_t$$ 
+(The time period of the innovation term, $\varepsilon_t$, follows the left-hand side timing - it is the new information/noise that will affect the new observation, whatever is on the left-hand side of the equation.)
+
+The right-hand side is a **moving average of order 1** in the ARIMA way of thinking,and we write it as MA(1) [not confusing at all with the moving averages from before, I do not see what you are talking about!]. From now on everytime we see MA(something) we will mean a something-order Moving Average from ARIMA. 
+
+So exponential smoothing has two parts, first it differences the data to make them stationary and then it is an MA(1). The differencing part can be ignored for now. Let's focus on the MA(1). **When we say it is a MA(1), a moving average of order 1, we mean that there is a full exponentially weighted moving average, the strength of which depends on its parameter.** The intuitions for $\alpha$ about the length of the average, its resistance to noise and reactivity to data from exponential smoothing hold fully. 
+
+When we talk about ARIMA and its MA, we do not use $\alpha$, and instead use $\theta$. Before we said that $0< \alpha \leq 1$. Actually, everything works fine (it remains an exponentially weighted moving average, i.e., all weights sum up to 1 and they are decreasing over time) if we say $0 < |\theta| < 1$. (NOte the absolute, I can use negative values as well.) Here, I replaced $\alpha$ with $\theta$ and note that in inequality I do not include 0 or 1. We will return to it later on when we put the full ARIMA together. 
+
+So with the new notation and dropping the differencing as it is not part of the MA (so we work directly on $y_t$), the MA(1) is:
+$$MA(1): y_{t} = \theta e_{t-1} + \varepsilon_t$$
+In case you missed it, I shifted the time period in the left-hand side to $t$ as is the convention. When we write models we do not write for $t+1$, but instead for $t$. Also, MA(1) is just a regression, I could just as well write $y_t = \beta x_t + \varepsilon_t$ from the last set of notes. 
+
+Here is an example of how a moving average of order 2 would look like:
+$$MA(2): y_{t} = \theta_1 e_{t-1} + \theta_2 e_{t-2} + \varepsilon_t$$
+I just added the term $\theta_2 e_{t-2}$. In regression thinking, this is just one more variable, and this variable is the errors from two periods ago. This like two exponential smoothings at the same time. If exponential smoothing was there to update our forecast (our best guess of the mean, the conditional expectation) by part of the last observed errors, to kind of auto-correct the model, the MA(2) says: use the errors from a period ago as well. Why? Because there is some correlaton structure in the errors that we can take advantage of. (In regression terms, because $e_{t-2}$ is correlated to $y_t$, even when we have considered as a variable the $e_{t-1}$.)
+
+In general, an MA($q$) of order $q$ is:
+$$MA(q): y_{t} = \sum_{j=1}^q \theta_j e_{t-j} + \varepsilon_t$$
+**The interpretation is the same. Each MA part acts like an exponentially weighted moving average. We use more than one, because we want to exploit correlations with past errors. The MA part has the function of auto-correcting the forecast based on our past errors. It moves the prediction towards the values that should minimise the future errors.** 
+
+And this is the moving average. 
+
+### A few more observations about exponential smoothing. 
+We do not need to go to more technical details of exponential smoothing, since this is not something you need for this course (right?). However, there are two observations that are easy to make and can help with modelling in general. 
+
+We have said a few times that **observations = structure + noise**. Let's use exponential smoothing to formalise this more and see how all the numbers fall nicely together to give you a complete describtion of your data. By applying the exponential smoothing we have used (there are many variants) we **assume** that the structure of the data is only a stochastic level (no stochastic trend or stochastic seasonality, or other exogenous effects). We can therefore wrire the following "equations":
+$$y_t = structure + \varepsilon_t$$
+$$structure = l_t$$
+$$l_t = l_{t-1} + \alpha e_t$$
+
+Here $l_t$ is the stochastic level, and its equation is an exponential smoothing from before. I just replaced $y_t$ with $l_t$ to clearly call it a "level". I also **assume** that $\varepsilon_t$ follows a normal distribution. I ask the computer to estimate the optimal $\alpha$ by minimising the sum of squared errors, just like with regression. 
+
+```{r}
+# Visualise what data are
+set.seed(3)      # Lock the random number generator
+sigma <- 4        # Standard deviation
+n <- 30           # Sample size
+h <- 5
+
+library(forecast)
+
+par(mar=c(4,4,2,1))
+
+# Create some data
+y <- 20 + rnorm(n,sd=sigma)
+
+y1 <- y
+y1[(n-8):n] <- y1[(n-8):n] + 10
+plot(1:n,y1,type="o",xlab="",ylab="",pch=20,xlim=c(1,n+h))
+abline(v=n+0.5,col="grey")
+fit <- ets(y1,model="ANN",alpha=0.38)
+frc <- forecast(fit,h=h)$mean
+lines(1:n,fit$fitted,col=cmp1[2],pch=20,type="o",lwd=2)  
+lines((n+1):(n+h),frc,col=cmp1[2],lwd=2)
+for (i in 1:n){
+  lines(c(i,i),c(y1[i],fit$fitted[i]),col=cmp1[1])
+}
+title(xlab="Period",ylab="Observation",line=2.5)
+legend("topleft",c("a=0.38","error"),col=cmp1[2:1],lty=1,ncol=2,cex=0.8)
+title(main="Exponntial smoothing",line=1)
+
+```
+We find that the best $\alpha=0.38$. I have plotted the fit and all the errors from that to the observations. 
+Let's produce a histogram of these errors, together with the appropriate normal distribution:
+
+```{r}
+# Visualise what data are
+set.seed(3)      # Lock the random number generator
+sigma <- 4        # Standard deviation
+n <- 30           # Sample size
+h <- 5
+
+par(mar=c(4,4,2,1))
+
+# Create some data
+y <- 20 + rnorm(n,sd=sigma)
+y1 <- y
+y1[(n-8):n] <- y1[(n-8):n] + 10
+
+fit <- ets(y1,model="ANN",alpha=0.38)
+err <- y1 - fit$fitted
+hist(err,col=cmp2[1],xlim=c(-10,10),main="",probability=TRUE)
+sigma<- sd(err)
+mu <- mean(err)
+x <- seq(-10,10,0.01)
+f <- dnorm(x,mean=mu,sd=sigma)
+lines(x,f,col=cmp1[1],lwd=2)
+
+
+```
+
+This normal distribution has a stadard deviation $\sigma=4.2$. So now I can go back to my equations and say that the noise 
+$$\varepsilon_t \sim \mathcal{N}(\mu,\sigma^2) = \mathcal{N}(0,4.25^2)$$
+(This reads that $\varepsilon_t$ follows a normal distribution with zero mean and 4.25 standard deviation.)
+Suppose we want to show our forecast uncertainty (technically called the prediction intervals) for a 95% interval. We look up the normal distribution tables and we get the value 1.96 standard deviations to cover a 95% interval. So we can write the prediction intervals as:
+$$ Lower\ 95\%\ interval\ for\ t+1: forecast\ for\ t+1 - 1.96 \times 4.25$$
+$$ Upper\ 95\%\ interval\ for\ t+1: forecast\ for\ t+1 + 1.96 \times 4.25$$
+Or visually
+```{r}
+# Visualise what data are
+set.seed(3)      # Lock the random number generator
+sigma <- 4        # Standard deviation
+n <- 30           # Sample size
+h <- 5
+
+library(forecast)
+
+par(mar=c(4,4,2,1))
+
+# Create some data
+y <- 20 + rnorm(n,sd=sigma)
+
+y1 <- y
+y1[(n-8):n] <- y1[(n-8):n] + 10
+plot(1:n,y1,type="o",xlab="",ylab="",pch=20,xlim=c(1,n+h),ylim=c(10,40))
+abline(v=n+0.5,col="grey")
+fit <- ets(y1,model="ANN",alpha=0.38)
+frc <- forecast(fit,h=h)
+lines(1:n,fit$fitted,col=cmp1[2],pch=20,type="o",lwd=2)  
+polygon(c(rep(n+0.5,2),rep(n+1.5,2)),
+        c(c(frc$lower[1,2],frc$upper[1,2]),rev(c(frc$lower[1,2],frc$upper[1,2]))),col=cmp2[2],border=NA)
+lines((n+1):(n+h),frc$mean,col=cmp1[2],lwd=2)
+title(xlab="Period",ylab="Observation",line=2.5)
+legend("topleft",c("a=0.38"),col=cmp1[2:1],lty=1,ncol=2,cex=0.8)
+title(main="Exponntial smoothing",line=1)
+
+```
+
+To obtain the prediction intervals for longer horizons we need to ask the model if there is any correlation structure between the errors. Well,we are doing a moving average on the errors, so we will carry on a part of the errors (so there is correlation). We expand the interval we obtain for t+1 accordingly (atually for this simple model we just increase it by what $\alpha$ tells us):
+```{r}
+# Visualise what data are
+set.seed(3)      # Lock the random number generator
+sigma <- 4        # Standard deviation
+n <- 30           # Sample size
+h <- 5
+
+library(forecast)
+
+par(mar=c(4,4,2,1))
+
+# Create some data
+y <- 20 + rnorm(n,sd=sigma)
+
+y1 <- y
+y1[(n-8):n] <- y1[(n-8):n] + 10
+plot(1:n,y1,type="o",xlab="",ylab="",pch=20,xlim=c(1,n+h),ylim=c(10,40))
+abline(v=n+0.5,col="grey")
+fit <- ets(y1,model="ANN",alpha=0.38)
+frc <- forecast(fit,h=h)
+lines(1:n,fit$fitted,col=cmp1[2],pch=20,type="o",lwd=2)  
+polygon(c((n+1):(n+h),rev((n+1):(n+h))),
+        c(frc$lower[,2],rev(frc$upper[,2])),col=cmp2[2],border=NA)
+lines((n+1):(n+h),frc$mean,col=cmp1[2],lwd=2)
+title(xlab="Period",ylab="Observation",line=2.5)
+legend("topleft",c("a=0.38"),col=cmp1[2:1],lty=1,ncol=2,cex=0.8)
+title(main="Exponntial smoothing",line=1)
+
+```
+
+If we used a much lower $\alpha$ less of the error structure would go in the moving average, so there would be less correlation to inflate the uncertainty. Here is an example:
+```{r}
+# Visualise what data are
+set.seed(3)      # Lock the random number generator
+sigma <- 4        # Standard deviation
+n <- 30           # Sample size
+h <- 5
+
+library(forecast)
+
+par(mar=c(4,4,2,1))
+
+# Create some data
+y <- 20 + rnorm(n,sd=sigma)
+
+y1 <- y
+y1[(n-8):n] <- y1[(n-8):n] + 10
+plot(1:n,y1,type="o",xlab="",ylab="",pch=20,xlim=c(1,n+h),ylim=c(10,40))
+abline(v=n+0.5,col="grey")
+fit <- ets(y1,model="ANN",alpha=0.1)
+frc <- forecast(fit,h=h)
+lines(1:n,fit$fitted,col=cmp1[2],pch=20,type="o",lwd=2)  
+polygon(c((n+1):(n+h),rev((n+1):(n+h))),
+        c(frc$lower[,2],rev(frc$upper[,2])),col=cmp2[2],border=NA)
+lines((n+1):(n+h),frc$mean,col=cmp1[2],lwd=2)
+title(xlab="Period",ylab="Observation",line=2.5)
+legend("topleft",c("a=0.1"),col=cmp1[2:1],lty=1,ncol=2,cex=0.8)
+title(main="Exponntial smoothing",line=1)
+
+```
+
+The interval is flatter across periods, and wider, as it has to accomondate larger errors. Not a great forecast, but illustrates the point. 
+
+If you are curious, the exact formula for the variance of longer horizons for a level exponential smoothing, which we are using here, is $\sigma_{t+h}^2 = \sigma_{t+1}^2 (1 + (h-1)\alpha^2)$, where $\sigma_{t+h}^2$ is what we got before from the errors of the model and the normal distribution, and $h$ is the horizon. So if $\alpha$ would be equal to 1, we would expand the intervals for every horizon by one more $\sigma_{t+h}^2$. If $\alpha=0$ then there would be no expansion of the variance over horizons. This is just due to how the model would calculate the weighted moving average based on the $\alpha$ you give it. We would then take the appropriate $\sigma_{t+h}^2$ and add again the forecast and the 1.96 from the equations above to get the lower and upper prediction intervals. 
+
+**This is the principle of how prediction intervals are calculated: we estimate the standard deviation of the errors and impose any correlation structure on it. This is the fundamental principle behind GARCH models.**
+
+One last thing with exponential smoothing. Recall we wrote it like:
+$$y_t = structure + \varepsilon_t$$
+$$structure = l_t$$
+We could have written a much bigger model, like:
+$$y_t = structure + \varepsilon_t$$
+$$structure = l_t + b_t + s_t$$
+where $b_t$ would be a stochastic trend, $s_t$ would be a stochastic seasonality and so on. Each of these would have its own equation (like $l_t$ before). This is what we call a **state space model** where it explicitly says: your observations are a function of structure and noise (it could be additve, multiplicative, or whatever) and each bit of the structure evolves over time like its own model, typically a fancy average. This is for instance how one gets forecasts like this:
+```{r}
+# Visualise what data are
+library(forecast)
+
+par(mar=c(4,4,2,1))
+fit <- ets(AirPassengers)
+plot(frc <- forecast(fit,h=12),main="")
+```
+Here, the time series is decomposed in each of its components (stochastic level, trend, and season), and each is modelled with exponenital smoothing separately. Then they are put back together, where the seasonality is multiplied by the (level + trend), and on top of everything the noise is multiplied as well. The multiplication makes everything proportional, so as the level of the series increases, the seasonality becomes wider, and the noise becomes wider. 
+
+Here, again I am assuming a particular model and I have not discussed how one would select a model. This is the "beauty" of state space models though. As with regression we selected the variables in the model using information crtieria (AIC), we can do the same here. We would get the AIC for the level exponential smoothing, and for a larger model and pick the best. For example, 
+
+```{r, fig.width=10, fig.asp=0.309}
+
+par(mar=c(4,4,2,1),mfrow=c(1,2))
+fit <- ets(AirPassengers,model="ANN")
+plot(frc <- forecast(fit,h=12),main="")
+title(main=paste0("Level, AIC = ",round(AIC(fit),2)),line=1)
+
+fit <- ets(AirPassengers)
+plot(frc <- forecast(fit,h=12),main="")
+title(main=paste0("Level, Trend, Season, AIC = ",round(AIC(fit),2)),line=1)
+
+```
+
+Recall that the AIC tries to balance **goodness of fit** and **complexity**, so we want the simplest model that fits well to the data. That is the model with the **lowest AIC**. Here, the larger model is best, as it is quite evident from the plots as well. 
+
+Enough with exponential smoothing, let's move on to ARIMA!
+
+## ARIMA
+
+ARIMA has three parts
+
+- AR, the autoregression. This is a regression on past lags ofthe time series.
+- I, the integration. This is there to difference the data and make them stationary. 
+- MA, the moving average. This is a regression on past errors.
+
+We have separately seen all three parts of ARIMA. In the previous set of notes we saw AR and I, and now we saw MA. So all we need is to put everything together. We write the model as ARIMA(p,d,q), where p, d, and q are the orders of each AR, I, and MA components respectively. (Some people write only the parts that are nonzero, for instance an ARMA(1,2) is an ARIMA(1,0,2).)
+
+### Autoregression
+
+Recall that an AR(1) is:
+$$AR(1): y_t = \phi_1 y_{t-1} + \varepsilon_t$$
+This is a regression on $y_{t-1}$.  I am using $\phi$ for the coefficient as is the convention with these models. An AR(2) is
+$$AR(2): y_t = \phi_1 y_{t-1} + \phi_2 y_{t-2} + \varepsilon_t$$
+And the general AR(p) is
+}$$AR(p): y_t = \sum_{i=1}^p \phi_i y_{t-i} + \varepsilon_t$$
+
+We assume a few things here. First, that $y_t$ is stationary. If not, we need to difference it first. Second, we assume that the noise is normally distributed. Based on this we can obtain prediction intervals as before. 
+
+The equations of ARIMA models can get a bit insane once you start combining everything together, so people have come up with shorthand notations. I do not think these make the lives of people easier, but I will mention them here just in case you have to face them. Recall from the last set of notes that we introduced the "backshift notation": 
+$$By_t = y_{t-1}$$ 
+where the $B$ changes the index of $t$ by one period in the past, i.e., its lag. As it is a lag, some people write this as $L$, so $Ly_t = y_{t-1}$. We can also raise $B$ in a power, and its interpretation is that we apply it that many times, so 
+$$B^2y_t = BBy_t = By_{t-1} = y_{t-2}$$
+Given these, we can rewrite AR processes as
+$$AR(1): y_t = \phi_1 By_{t} + \varepsilon_t$$
+$$AR(2): y_t = \phi_1 By_{t} + \phi_2 B^2y_{t} + \varepsilon_t$$
+and
+$$AR(p): y_t = \sum_{i=1}^p \phi_i B^îy_{t} + \varepsilon_t$$
+If your lectures do not go in what follows, feel free to ignore it completely, as it comes with a health warning! 
+
+Look at an AR(p) ignoring the $y_t$, we get the following:
+$$ ... = \phi_1 B ... + \phi_2 B^2 ... + \phi_3 x^3  .... + ... + \phi_p B^p$$
+which looks like a polynomial:
+$$ c_1 x + c_2 x^2 + x_3 B^3 + .... + c_p x^p$$
+We call this the "characteristic AR polynomial", because by looking at this we can understand how the AR part of the model behaves. And because the notation is not messy enough, people write this as $\Phi_p(B)$ or $\Phi_p(L)$, where $\Phi_p = \{ \phi_1, \phi_2, ..., \phi_p\}$. 
+
+I am not going into this just to confuse you, there is a property that may be mentioned, so I want to saw what is happening there. An **ARIMA must be stable**. That means that the coefficients of the AR polynomial, all the $\phi$ together must have values, so that **the $y_t$ that the model describes is stationary**. 
+
+This is easy to understand for AR(1). As long as $|\phi| < 1$ the model will tend to revert to some mean (remember the definition of stationarity is that there is a long-term mean). Let's understand why that is the case. Suppose that $\phi=1.5$, therefore at every period we add a whole $y_{t-1}$ and some more (0.5 more). Over time, these "0.5 mores" will result in an upward increase, a trend. Therefore, there will be no long-term mean and the time series will be non-stationary. In the previous set of notes we briefly looked at why this is not great. 
+
+For higher AR orders, to find what the coefficients should look like, we need to use the polynomial. Given a set of $\phi$'s we solve the polynomial (we find for which values we get $\phi(B)=0$). We will find as many roots (solutions to the equal to zero) as the AR terms. These may be real or complex numbers, and their absolute real part must be above one. Crystal clear? 
+
+I really do not think that going into complex numbers is helpful here, so I will just mention another phrase you may encounter: **the roots must be outside the unit circle**, which in human speak means that all the absolute solutions of the polynomial must be over 1. It is a unit circle, because 1 matters (1 unit). It is a circle becasue we have the real values going from -1 to 1 and the complex value goes from -1 to 1 as well, so together they form a circle. Just to make your life easier, some software do not report the roots being ourside the unit circle, but the inverse roots (so, 1/root) being inside the unit circle. The 1/root switches the solution from inside to outside the circle. Why? Because it makes plots nicer..! ARIMA are a mess, and the textbooks about ARIMA are even more messy! And nobody solves these by hand, we ask the computer to solve the polynomial of course. I'd rather do burpees than factorise a high order polynomial by hand. 
+
+Okay, back to reasonable stuff. **The AR coefficients must be such that the describef time series is stationary**. When we ask the computer to estimate an ARIMA on our data, this is always a restriction. If it cannot do it, it will give you a warning, and still provide you some restricted values. We need this to make sure that any autoregressions in the AR regression are not there spuriously.
+
+### Intergration (Differencing)
+Stationarity is necessary for ARIMA to work. In general time series may not be stationary in so many ways. 
+Here is a simple example of a non-stationary time series, the random walk (that we saw in the very beginning):
+$$y_t = y_{t-1} + \varepsilon_t$$
+(note this is like an AR(1) with $\phi=1$. When we talked about the values of $\phi$ we said it must be $<1$.) This is how a random walk looks like:
+```{r}
+# Visualise what data are
+library(forecast)
+n <- 40
+sigma <- 4
+set.seed(1)
+y <- cumsum(rnorm(n,sd=sigma))
+
+par(mar=c(4,4,2,1))
+plot(1:n,y,xlab="",ylab="",type="l")
+title(xlab="Period",ylab="Observation",line=2.5)
+```
+
+It just moves randomly, each period changing by $\varepsilon_t$. Below are a few more random walks to get an idea of how random they can be (this is really controlled by the standard deviation of the normal distribution that $\varepsilon_t$ follow)
+```{r}
+# Visualise what data are
+library(forecast)
+n <- 40
+sigma <- 4
+set.seed(1)
+y <- apply(matrix(rnorm(n*8,sd=sigma),ncol=8),2,cumsum)
+par(mar=c(4,4,2,1))
+ts.plot(y,xlab="",ylab="",type="l",col=cmp1)
+title(xlab="Period",ylab="Observation",line=2.5)
+```
+
+As you can see, there is no long-term mean. These are all **non-stationary** time series.
+If we were to write down the AR polynomial and check its roots, we would find a root at exactly 1, we would say that the process has **a unit root**. This is a fancy way to say a time series is non-stationary. When series are non-statoinary we calculate their differences. 
+$$z_t = (1-B)y_t = y_t - By_t = y_t - y_{t-1}$$
+That would be an I(1) in the ARIMA. We can apply any order of differencing. So here is an I(2), which is difference on difference:
+$$z_t = (1-B)^2y_t = (1-B)(1-B)y_t = (1 - 2B + B^2)y_t = y_t - 2y_{t-1} + y_{t-2}$$
+
+If I take any of the random walks from before and I model it as an ARIMA(0,1,0) - so only first order differences - the data looks like:
+```{r}
+# Visualise what data are
+library(forecast)
+n <- 40
+sigma <- 4
+set.seed(1)
+y <- cumsum(rnorm(n,sd=sigma))
+
+par(mar=c(4,4,2,1))
+plot(1:n,c(NA,diff(y)),xlab="",ylab="",type="l")
+title(xlab="Period",ylab="Observation",line=2.5)
+abline(h=0,col="grey")
+```
+
+So just errors fluctuating around a mean. Now it is stationary. 
+Typically the order of differencing is zero or one. Differenced data can be read as "the rate of change of $y_t$". In your case, these could be returns of assets (remember to have asset returns we would also need logariths!). Sometimes we may need a second difference to obtain stationarity, where now we would model the "rate of change of the rate of change of $y_t$" or "simply" the "acceleration of $y_t$".
+
+How do we know if we need differencing? Ususally this is done using statistical tests, like the KPSS test. What these tests really do is check whether the AR regression is well behaved or not. I think we do not need to go into the details of this. The important thing to remember is that we cannot check the order of differencing with standard ARIMA models by using AIC (or p-values of the coefficients in a regression style). We need statistical tests, or data exploration - though the latter is largerly seen as obsolete, because of the false results it can give. If in doubt, it is better to over-difference than not. Over-differencing will mess up the standard deviation of the modelled $y_t$, but you can still make things work. If you underdifference, you have a trend there and everything becomes messy and spurious. 
+
+We introduced non-stationarity with the case of the unit root, where $\phi=1$. In principle you can have much higher values (what is for instance implied by higher order differences, like I(2)). Processes with very hgih coefficients are called explosive, and very quickly go to infinity (you add to $y_{t+1}$ multiple times of $y_t$ until the whole thing becomes a massive number). In those cases we difference them to death, or model them with nonlinear methods.
+
+Maybe I should have said that earlier... in ARIMA when one says higher values for the coefficients, we are really thinking in absolutes, it does not matter if we are positive or negaitve, it matters if we are on the unit root, beyond it, or before it. (If you skipped the bit with the health warning, the details are there, or just skip this comment as well!)
+
+### Moving Average
+We saw this just before, so I will just write the two notatoins for your reference. Human notation:
+$$MA(q): y_{t} = \sum_{j=1}^q \theta_j e_{t-j} + \varepsilon_t$$
+And "why we do this to ourselves" notation:
+$$MA(q): y_{t} = \sum_{j=1}^q \theta_j B^je_{t} + \varepsilon_t$$
+Like before, there is an implied MA polynomial here, the $\Theta(B)$. Again the characteristic polynomial tells us about the properties of the model. In the simple case of MA(1) we need $-1 < \theta < 1$ or equivalently $|\theta| < 1$. For larger MA processes we again look at the roots (solutions) of the polynomial. Again, they have to be outside the unit circle. Then we can say that the model is **invertible**. This really means that the weights on the implied weighted moving average on the past errors behaves like the rules we descirbed for exponential smoothing. The moving average has decreasing weight for observations further in the past, the weights are non-negative, and they sum up to 1. For notation, the polynomial is written as $\Theta_q(B)$, where $\Theta_q$ is a vector that contains all $q$ MA coefficients, just like the AR polynomial. 
+
+Since the MA is really a regression on the errors, we decide the order of the MA like a regression, so typically we pick the one that has the best AIC (lowest is best). 
+
+### Putting everything together
+So the ARIMA(p,d,q) is... (drum roll):
+$$ARIMA(p,d,q): (1-b)^d y_{t} = \sum_{i=1}^p \phi_i y_{t-i} + \sum_{j=1}^q \theta_j e_{t-j} + \varepsilon_t$$
+So, this is: 
+$$(Differencing) y_t = (AR\ part) + (MA\ part) + \varepsilon_t$$
+
+Or, fully using the "backshift notation", the polynomials and bringing the AR part on the left-hand side, as is the convention:
+$$ARIMA(p,d,q): \Phi_p(B) (1 - B)^d y_t = \Theta_q(B) e_t + \varepsilon_t$$
+I am only including this, in case you have to face it in the lectures. This form is only useful when you want to work out the equations and not really using the model. (For instance, see that the AR polynomial, the $\Phi_p(B)$ is multiplied with the differencing part $(1 - B)^d$, which can help us to derive the deepr details of how ARIMA behave.)
+
+### Constant
+
+One can include a constant in the ARIMA. In the simpler equation, one would have (I added $c$):
+$$(1-b)^d y_{t} = c + \sum_{i=1}^p \phi_i y_{t-i} + \sum_{j=1}^q \theta_j e_{t-j} + \varepsilon_t$$
+
+When there is no differencing ($d=0$), this constant becomes a long-term average adjusted by the effect of the AR part of the model. The exact mean is:
+$$\mu = \frac{c}{1 - \phi_1 - \ldots - \phi_p}$$
+When there is a differencing the rate of change of $y_t$ is larger by $c$ at every period, impossing a deterministic trend (see that $c$ is not connected to the noise in any way) over time, with a slope of $c$. This is called a "drift".
+
+The use of constant is rather rare. 
+
+### Identification of ARIMA orders
+
+We kind of covered it already. AR and MA are regressions, so they are chosen so that we get the best AIC. The differencing I is chosen based on statistical testing. The complication arises in that we have two directions of search, changing the AR and the MA at the same time. Below is one of the more successful strategies for automatically identfying ARIMA models. 
+
+- Start by testing the time series for stationarity. If there needs to be differencing, do so, and work on the differenced data from now on. Usually check up to $d_{max}=2$
+
+- Start with a small model, like ARMA(1,1) - see that I ignore the differencing here, there is no "I" part, it is already dealt with above. Get its AIC. Now look for all neighbouring models, checking +/- 1 on both the AR and the MA order. Compare all local models based on AIC. Pick the best. 
+
+- Repeat the previous step by searching the neighbourhood of the current best ARMA. Once you cannot imporve your model further by adjusting AR and MA orders by +/- 1, you are done. Usually check up to $p_{max}=5$ (for the AR) and $q_{max}=5$ (for the MA).
+
+- If you want to check for a constant, it is just another term if we think it as a regression, so AIC can decide that for you.
+
+The modern take on model identification is based on the logic of the bias-variance trade-off. We care about getting the penalised for complexity model that gives us the best fit. This is why we do not care about in-sample fit specifically (it is used in the calculation of the AIC, but not explicitly tested) or p-values.
+
+Older methodologies would rely on the ACF and PACF plots, the aurocorrelation and partial aurocorrelation functions that we saw in the previous notes. These only work for very simple ARIMA models, usually that are clean AR or clean MA (clean means thereis only that in the model). Once you start mixing the two and or have orders more than 2, things get extremely messy and lead to wrong models. 
+
+Trivia time! Before I mentioned that exponential smoothing was developed by a practitioner, while ARIMA by two academics. There was a lot of shitting on exponential smoothing in conferences as being crude and overly simplistic with no proper theory (the fact is that many types of exponential smoothing are actually ARIMA models, the level one we saw before is simply an ARIMA(0,1,1)), portraying ARIMA as superior. The thing is that exponenital smoothing was a lot more accurate than ARIMA in various evaluations and competitions. It is also much much simpler to understand and implement. So exponential smoothing was kind-of winning the race. A main reason for this was thay it is very easy to find the correct type of exponential smoothing compared to ARIMA - it simply asks, do you have seasonality? yes/no, trend? yes/no - while ARIMA asks you for correct orders, differencing and stuff. This was still true till mid 2000s (these models were written in the 70s). This is when AIC became more widely understood and used. Then it became more acceptable to stop bothering about so much statistical testing and p-values, or ACF and PACF plots. We could finally identify the orders of ARIMA successfuly for complex time series, and ARIMA became finally a powerful model. Nowadays, exponential smoothing and ARIMA are both considered very successful models, that are easy to use. More trivia! I sent you a reference to an online book by Rob and George. Rob was the guy who wrote the algorithm for identifying ARIMA based on AIC,which I described above, and made the whole thing work well. The corresponding paper was written in 2008! 1970s to 2008 to make a model work, because people were so obsessed with p-values!? FFS! Rob's view became the norm till about 2015-2017, when I did my stuff and showed that model identification will be uncertain anyways, and we should use other tricks instead (and that's why I got to be a full professor early: I used my lack of understanding statistics to introduce a new statistical thinking, because the old one was too difficult for me to understand :) So, now its your turn!
+
+### How does the estimated model look like?
+Here is an example of putting everything together:
+```{r}
+library(forecast)
+
+fit <- auto.arima(WWWusage, seasonal=FALSE)
+frc <- forecast(fit)
+
+par(mar=c(4,4,2,1))
+plot(frc)
+title(xlab="Period",ylab="Observation",line=2.5)
+```
+
+Let's look at the standard model output in R
+```{r}
+library(forecast)
+fit <- auto.arima(WWWusage, seasonal=FALSE)
+print(fit)
+```
+
+We see that the methodology chose 1 term for the AR, 1 term for the MA, and to use first differences. The differences are applied and then a regression with a single AR and a single MA is built. The coefficients for these are given in the table. Observe that they are both under 1, as discussed above (for simple order 1 cases). The "s.e." is the standard error of the coefficients, how uncertain is our estimation of them. That would be the second column in the regression table, the standad error of the coefficient. If we were in the 1970s, we would divide the coefficient with that to get the t-statistic and then look that up in the t-distribution table to get a p-value. None of that waste of time is provided here :) 
+
+The sigma^2 is what will be used to construct the prediction intervals. Look at the figure above, it provides the 80% and 95% intervals. The 95% is calculated as before, forecast +/- 1.96 sigma. The log-likelihood can be understood as something like the sum of squared errors that is minimised to find the model coefficients. I have a brief explananation about likelihoods in the previous set of notes. 
+
+The last row gives us the AIC, the AICc, which is an AICc corrected for small sample sizes, and the BIC, which is a more aggressive information criteria that penalises models for complexity more. AICc is preferable than AIC for small samples, but the intuition is the same. For large samples, these two become very similar. BIC and AIC will not necessarily agree on the model orders, but once you factor in the different coefficeients that are estimated basd on the different model, the practical differences are minimal. The forecasts will look quite similar. So, in does not mater that much.
+
+(In 2026 we have moved beyond the logic of AIC with what we call: shrinkage estimators. These work quite well for regression, but to make them work for exponential smoothing and ARIMA is a completely different level of complexity, so AIC it is for practical cases.)
+
+### Seasonal ARIMA
+You can easily expand the ARIMA models to deal with seasonal time series. The logic is that instead of using lags that are one period ago, you use lags that are one season ago. For instance you don't build your AR on yesterday, two days ago, and so on, but instead on a week ago, two weeks ago, and so on. In fact, we use both terms, the level terms (the standard ARIMA) and the seasonal terms together. The level and the seasonal AR, I, and MA can be of different orders, so one would write ARIMA(p,d,q)(P,D,Q). I do not expect that you will go into seasonal ARIMA (or GARCH) with financial data, so I will skip the theory for all these (unless you do face them. Then let me know and I can extend this to cover seaosnal ARIMA).
+
+As an example, here is a time series with the seasonal ARIMa.
+```{r}
+library(forecast)
+
+fit <- auto.arima(AirPassengers)
+frc <- forecast(fit)
+
+par(mar=c(4,4,2,1))
+plot(frc)
+title(xlab="Period",ylab="Observation",line=2.5)
+```
+
+And the model is:
+```{r}
+library(forecast)
+fit <- auto.arima(AirPassengers)
+print(fit)
+```
+The model says: ARIMA(2,1,1)(0,1,0)[12], so for the level part we have: AR=2, I=1, MA=1. For the seaosnal part we have AR=0, I=1, and MA=0. The [12] is the seasonal length, which is 12 months here. So the seasonal difference would be $z_t = y_t - y_{t-12}$. If we had some seaosnal AR or MA terms, they would show up in the table, but otherwise, everything else is the same. 
+
+### AR(1) = MA(inf) and MA(1) = AR(inf)
+This is a techical side note, that is more relevant if you see machine learning models, so if you stick with ARIMA and GARCH, feel free to pretend it is not here. 
+
+When I was going through the averages, before we formally went into ARIMA, I mentioned the "memory" of the models, how many observations they remember. For ARIMA, in general it remembers the number of observations prescirbed by the AR part. If it is AR(2) it remembers two observations. The MA part has infinite memory as we show with the exponential smoothing, the weighted moving average will have very small weights that span the complete history of the time series. 
+
+With ARIMA we can show that remembering everything or just one period are actually equivalent - if you get the correct coefficients. I will show the AR(1) is MA(inf), but we can easily show the opposite as well, that MA(1) is AR(inf). We start from an AR(1) model:
+$$y_t = \phi y_{t-1} + \varepsilon_t$$
+$$y_t - \phi By_t = \varepsilon_t$$
+$$(1 - \phi B)y_t = \varepsilon_t$$
+Clean up the left-hand side to have only $y_t$:
+$$y_t = \frac{1}{1 - \phi B} \varepsilon_t$$
+As long as the process is stationary, so $|\phi|<1$ we can replace the fraction with its geometric expansion:
+$$y_t = (1 + \phi B + \phi^2 B^2 + \phi^3 B^3 + \dots) \varepsilon_t$$
+Expland,
+$$y_t = \varepsilon_t + \phi \varepsilon_{t-1} + \phi^2 \varepsilon_{t-2} + \phi^3 \varepsilon_{t-3} + \ldots$$
+This is an infinitely long MA process. Exactly the same logic shows the reverse. 
+
+**What does this tell us practically?** **When we cannot use MA, because we need to have past errors and not all models do that easily, you can use a lot of AR instead.** This is very handy for models that do not do MA naturally, like many machine learning models. We can include more lags to pretend they have MA capabilities. The opposite is true, but if you can model MA, AR is typically not your problem...
+
+### A note on prediction intervals
+This is really to build up towards GARCH models. Look at the examples above for the ARIMA. The prediction intervals seem to expand over time. Although they do, we understand the variance to be constant (homescedastic over time). The underlying sigma is always the same, whatever the model tells us in its output. The reason the prediction intervals expand over time is because of the correlations in the errors, prescribed by the rest of the ARIMA model. We saw the same thing for exponential smoothing, the $\sigma_{t+1}^2$ was always the same, and the $\sigma_{t+h}^2$ were adjusted based on the model parameter.
+
+It is quite possible that the sigma changes over time. The sigma itself could be a time series. Now the predcition intervals would change because the sigma chnages over time. An ARIMA on the time series of the sigma is what the GARCH model is. If you are clear about ARIMA, you only need to change the $y_t$ with the variance (actually with $e_t^2$) and you have your GARCH. ARCH stands for Autoregressive Conditional Heteroscedastic (heteroscedastic as the opposite of homoscedastic, its variance changes over time. "homo" = same, "hetero" = different in greek. "scedastic" = how it scatters in greek). G in GARCH is Generalised, because it includes the MA bit as well. The ARCH model is ARIMA(p,0,0) and GARCH is ARIMA(p,0,q). The catch is that we build the GARCH on top of ARIMA, so that we have some $e_t^2$ to work with. But all this is for another series of notes: "Mila's fun with GARCH!". 
+
+### If you have to use ACF and PACF
+If you are forced to use the autocrrelation (ACF) and the partial autocorelation functions (PACF) for identifying the model structure, look at my book in page 160, Figure 6.2, and in the following pages up to Figure 6.9. There is a ton of evidence that this is a dead-end methodology, but if you must the "theory" is there. It is trivial to show in R why this is not working. Even to get these plots you have to cherry pick among random draws, so that the noise is "good enough" to give you what you are looking for. 
+
+**Good luck!**
