@@ -1,0 +1,531 @@
+---
+title: "Mila's fun with GARCH!"
+author: ''
+date: "`r Sys.Date()`"
+output:
+  html_document: 
+  mathjax: "default"
+pdf_document: default
+---
+  
+```{r setup, include=FALSE}
+library(RColorBrewer)
+library(forecast)
+library(plotly)
+library(rugarch)
+library(xts)
+library(tsutils)
+library(smooth)
+
+cmp1 <- brewer.pal(7,"Set1")
+cmp2 <- brewer.pal(7,"Pastel1")
+
+# Global options for all chunks
+knitr::opts_chunk$set(
+  echo = FALSE,          # Hide code by default
+  warning = FALSE,       # Hide warnings
+  message = FALSE,       # Hide messages
+  fig.width = 5,         # Base width in inches
+  fig.asp = 0.618,       # Golden ratio (height/width)
+  fig.align = "center"   # Center plots on the page
+  # dev = "png", 
+  # dev.args = list(type = "cairo-png"),
+  # antialias = "subpixel"
+)
+```
+
+```{r }
+# Generate some returns with GARCH behaviour
+n <- 100        # Sample
+omega <- 0.02   # Constant
+alpha <- 0.15   # AR term - ARCH
+beta <- 0.80    # NA tern - GARCH
+
+set.seed(1)
+
+# Initial values
+y <- sigma2 <- rep(0,n)
+sigma2[1] <- omega/(1-alpha-beta)
+y[1] <- rnorm(1,mean=0,sd=sqrt(sigma2[1]))
+
+for (i in 2:n){
+  sigma2[i] <- omega+alpha*(y[i-1]^2)+beta*sigma2[i-1]
+  y[i] <- rnorm(1,mean=0,sd=sqrt(sigma2[i]))
+}
+```
+
+# What is the objective of a GARCH?
+
+We have seen that a forecast has two parts, its conditional expectation (the point foreast) and its uncertainty around that conditional expectation (the prediction intervals). 
+
+```{r }
+library(forecast)
+h <- 10 # Forecast horizon
+fit <- auto.arima(y)
+frc <- forecast(fit,h=h)
+
+par(mar=c(4,4,2,1))
+plot(1:n,y,type="l",xlim=c(1,n+h),xlab="",ylab="",ylim=c(-1.4,1.4))
+abline(h=9,col="grey")
+polygon(c((n+1):(n+h),rev((n+1):(n+h))),c(frc$lower[,2],rev(frc$upper[,2])),col=cmp2[2],border=NA)
+lines((n+1):(n+h),frc$mean,col=cmp1[1],lwd=2)
+legend("topleft",c("Cond. Expectation","Preeiction Interval 95%"),lty=1,lwd=c(1,5),col=c(cmp1[1],cmp2[2]),ncol=2,cex=0.8)
+title(xlab="Period",line=2.5)
+
+```
+
+Recall that the prediction intervals are effectively:
+$$Prediction\ interval = Conditional\ Expectation\ \pm Factor\ for\ \% \times \sqrt{Variance\ of\ Forecast}$$
+We use $\pm$ to get the upper and lower intervals. The "factor for %" depends on the distribution we have assumed for the errors of the model. For instance, if we assume normal, we can look up that value in the tables for the normal distribution. For 95% that would be 1.96 (in R you get that by asking for qnorm(1-0.05/2) - 95% is 5% from 100% and we divide that 5% by 2 as we want to spread it in the upper and lower intervals). Finally the variance of the forecast is the variance of the fitting errors as we show in the notes for the ARIMA. 
+
+Why is the variance of the forecasts the variance of the fitting errors? Let's look at the formula for the variance
+$$\sigma^2  = \frac{1}{n}\sum_{i=1}^n\left(x_i - \bar{x}\right)^2$$
+where $n$ is the sample size, $x_i$ are the observations, and $\bar{x}$ is the mean of the $x_i$. Let's apply this on a time series. Instead of $x_i$ we will have $y_i$ as is the convention for time series (it does not matter, just to match with textbooks!) and for the mean we need the forecast, $\hat{y}_t$. which is the conditional expectation, i.e., the conditional mean, i.e, the mean given all information at a given period. 
+
+Let me visualise this conditional mean thing to make it clear (probably I should have done this in the very first set of notes...)
+```{r }
+library(forecast)
+
+par(mar=c(4,4,2,1))
+plot(1:length(AirPassengers),AirPassengers,xlim=c(1,(length(AirPassengers)+12)),type="l",xlab="",ylab="",lwd=2)
+abline(v=length(AirPassengers)+0.5,col="grey")
+fit <- auto.arima(AirPassengers)
+frc <- forecast(fit,h=12)
+lines(c(fit$fitted,frc$mean),col=cmp1[1])
+abline(h=mean(AirPassengers),col=cmp1[2])
+legend("topleft",c("Data","Conditional Mean","Sample Mean"),lty=1,col=c("black",cmp1[1:2]),cex=0.8,lwd=2)
+title(xlab="Period",line=2.5)
+```
+
+The conditional mean (what I often call conditional expectation) can be understood as taking into consideration all information up to that point and giving a "local" mean. For instance this time series is seasonal, so the conditional mean takes into consideration the month of the year to capture the seaosonality. It also takes into account the trend. If you had explanantory variables, it would also consider those. The unconditional mean (expectation) matches the sample mean, which is effectively just taking the mean of the data. Just as a reminder, when I use the word mean I focus on the specific available sample, while the expectation refers to any sample (think of the population). 
+
+Back to forecast variance. If for $\bar{x}$ we use the forecast, $\hat{y}_t$, we use the conditional mean. Our formula becomes:
+$$\sigma^2  = \frac{1}{n}\sum_{t=1}^n\left(y_t - \hat{y}_t\right)^2$$
+and since the forecast errors are $e_t = y_t - \hat{y}_t$ we get that
+$$\sigma^2  = \frac{1}{n}\sum_{t=1}^n\left(e_t\right)^2$$
+That is, the variance of the $y_t$ is the variance of $e_t$. Let's be more precise. We used the conditional mean, so this will be the conditional variance. The following plot shows the difference between conditional and unconditional.
+
+```{r, fig.width=6 }
+library(smooth)
+library(tsutils)
+library(RColorBrewer)
+
+cmp <- brewer.pal(3,"Set1")
+cmp2 <- brewer.pal(3,"Pastel1")
+
+
+n <- 36
+scl <- 80
+dc <- decomp(AirPassengers)
+initSeason <- tail(dc$season,12)
+set.seed(1)
+dat <- sim.es(model="ANM",obs=n,frequency=12,initial=1000,initialSeason=initSeason,mean=0,sd=10)$data
+
+xx <- seq(-80,80,0.5)
+nd <- dnorm(xx,mean=0,sd=10)
+
+ds <- density(dat,bw=45)
+xds <- n+2+ds$y*2500
+
+par(mar=c(4,4,2,2))
+yy <- range(dat)+c(0,max(xx))+c(0,200)
+yy <- yy + c(-1,1)*0.04*diff(yy)
+plot(1:length(dat),dat,xlim=c(0,max(xds)*1.04),ylim=yy,pch=20,type="o",ylab="",xlab="",axes=FALSE)
+axis(2)
+axis(1,at=c(seq(0,n,5)))
+abline(h=0,col="grey")
+for (pt in seq(8,n,10)){
+  lines(rep(pt,2),range(dat[pt]+xx)+c(-1,1)*0.1*diff(range(dat[pt]+xx)),col="grey")
+  polygon(c(pt+nd*scl,pt+(nd*scl)[1]),c(dat[pt]+xx,dat[pt]+xx[1]),col=cmp2[2],border=NA)
+  lines(pt+nd*scl,dat[pt]+xx,col=cmp[2])
+  points(pt,dat[pt],pch=20,col=cmp[2])
+  lines(c(pt,(pt+nd*scl)[round(length(nd)/2)])+c(0,0.5),rep(dat[pt],2),col=cmp[2],lty=2)
+}
+
+polygon(c(xds,xds[1]),c(ds$x,ds$x[1]),col=cmp2[1],border=NA)
+abline(v=n+2,col="grey")
+lines(xds,ds$x,col=cmp[1])
+points(n+2,mean(dat),pch=20,col=cmp[1])
+lines(c(n+2,n+2+max(ds$y*2500)+0.5),rep(mean(dat),2),col=cmp[1],lty=2)
+legend("top",c("Conditional distribution","Conditional mean","Unconditional distribution","Unconditional mean"),
+       pch=c(22,20,22,20),col=c(cmp[2],cmp[2],cmp[1],cmp[1]),pt.bg=c(cmp2[2],NA,cmp2[1],NA),lty=c(NA,2,NA,2),
+       ncol=2,box.col="white",bg="white")
+box()
+title(xlab="Period",line=2.5)
+title(ylab="Demand",line=2.5)
+```
+
+The conditional distributions, can be understood as the distributions of each observation, with its mean and variance. Recall the "basics" in the first set of notes, on how to view data. They are not points, they are always distributions. The uncoditional strips away the time aspect (what we condition on when we do not have any explanatory information for example, price) and looks everything as a collection of points. The unconditional mean, gives you an impression of the level of the time series, but says nothing about the local (stochastic) level, the seasonality, trend, or whatever else structure is there. Likewise, the unconditional variance is very different to the conditional, as it looks at how all observations are distributed ingnoring their position. Look at the spread of the blue distributions against the spread of the red distribution, as proxies for the conditional and unconditional variances respectively. 
+
+In time series modelling, in almost 100% of the times we talk about conditional stuff, means, variances, and so on. And if we have a model that describes a time series $y_t$, its conditional expectation is the forecast, and its conditional variance, is the (conditional) variance of the forecast errors.
+
+So far, everything we have talked about is handled by regression or ARIMA. We looked at how to get that forecast, and the prediction intervals. We need one more piece before GARCH can becomes clear. 
+
+So far, we have assumed that the conditional variance, whatever it is numerically, it stays constant over time. We saw that this can "expanded" with the forecast horizon, but this is because we accumulate errors from the previous forecasts: to forecast $t+2$ we use the $t+1$ and so on. The errors from $t+1$ contribute to the errors of $t+2$. Recall that when we looked at level exponential smoothing, we had a formula for the variance that goes in the prediction intervals:
+$$\sigma_{t+h}^2 = \sigma_{t+1}^2 (1 + (h-1)\alpha^2)$$
+The variance for each forecast horizon (that can expand), $\sigma_{t+h}^2$, is a function of the 1-step ahead forecast variance, $\sigma_{t+1}^2$. The  $\sigma_{t+1}^2$ is constant. It does not change at different periods $t$. The following figure may help recall what we are talking about. Note how the prediction intervals become wider, as the horizon becomes longer. 
+
+```{r }
+# Generate some returns with GARCH behaviour
+n <- 100        # Sample
+omega <- 0.02   # Constant
+alpha <- 0.15   # AR term - ARCH
+beta <- 0.80    # NA tern - GARCH
+
+set.seed(1)
+
+# Initial values
+y <- sigma2 <- rep(0,n)
+sigma2[1] <- omega/(1-alpha-beta)
+y[1] <- rnorm(1,mean=0,sd=sqrt(sigma2[1]))
+
+for (i in 2:n){
+  sigma2[i] <- omega+alpha*(y[i-1]^2)+beta*sigma2[i-1]
+  y[i] <- rnorm(1,mean=0,sd=sqrt(sigma2[i]))
+}
+```
+
+```{r }
+library(forecast)
+fit <- ets(y,alpha=0.5)
+frc <- forecast(fit,h=10)
+
+par(mar=c(4,4,2,1))
+plot(1:n,y,xlab="",ylab="",xlim=c(90,n+4.5),type="l",ylim=c(-2,2))
+polygon(c((n+1):(n+10),rev((n+1):(n+10))),c(frc$upper[,2],rev(frc$lower[,2])),col=cmp2[2],border=NA)
+
+text(n+1, 1.2, expression(sigma[t+1]))
+for (i in 1:10){
+  lines(rep(n+i,2),sqrt((1+(i-1)*0.5^2)*fit$sigma2)*c(-1,1)*qnorm(1-0.05/2)+frc$mean[1],col=cmp1[4],lwd=2,lty=3)
+}
+text(n+2, 1.4, expression(sigma[t+2]))
+text(n+3, 1.6, expression(sigma[t+3]))
+text(n+4, 1.8, expression(sigma[t+4]))
+lines((n+1):(n+10),frc$mean,col=cmp1[1],lwd=2)
+box()
+
+```
+
+The calculations for each $sigma_{t+h}$ is for an exponential smoothing with $\alpha=0.5$ as in the figure above:
+
+- $\sigma_{t+2}^2 = \sigma_{t+1}^2 (1+(2-1)0.5^2) = 1.25\sigma_{t+1}^2 \qquad \Longrightarrow \qquad \sigma_{t+2} = \sqrt{1.25}\sigma_{t+1}$
+
+- $\sigma_{t+3}^2 = \sigma_{t+1}^2 (1+(3-1)0.5^2) = 1.50\sigma_{t+1}^2 \qquad \Longrightarrow \qquad \sigma_{t+3} = \sqrt{1.50}\sigma_{t+1}$
+
+- $\sigma_{t+4}^2 = \sigma_{t+1}^2 (1+(4-1)0.5^2) = 1.75\sigma_{t+1}^2 \qquad \Longrightarrow \qquad \sigma_{t+4} = \sqrt{1.75}\sigma_{t+1}$
+
+The multi-step horizon variances increase, but they all depend on $\sigma_{t+1}^2$ that is always constant. 
+
+What does this imply visually? Below is the first time series and the 95% intervals, assuming a constant variance.
+
+```{r }
+library(forecast)
+h <- 10 # Forecast horizon
+fit <- auto.arima(y)
+frc <- forecast(fit,h=h)
+
+par(mar=c(4,4,2,1))
+plot(1:n,y,type="l",xlim=c(1,n),xlab="",ylab="",ylim=c(-1.4,1.4))
+polygon(c(1:n,rev(1:n)),c(fit$fitted+qnorm(1-0.05/2)*fit$sigma2, rev(fit$fitted-qnorm(1-0.05/2)*fit$sigma2)),
+        col=cmp2[2],border=NA)
+lines(y)
+title(xlab="Period",line=2.5)
+
+```
+
+
+Since we used a constant variance $\sigma^2$ we call this **homoscedastic** - same variance all the time. However, this does not seem to describe the time series well. Since we used 95% intervals, we would expect on average 1 out of 20 observations (5%) to be outside the intervals. We would also expect to exhibit no structure, that is no periods of increased or decreased uncertainty. Here both of these do not hold, as we have quite a few points outside the bounds, and clear periods of higher or lower variance. 
+
+Below we lift the assumption of homoscedasticity and allow for the variance to change over time. 
+```{r }
+library(forecast)
+h <- 10 # Forecast horizon
+fit <- auto.arima(y)
+frc <- forecast(fit,h=h)
+
+par(mar=c(4,4,2,1))
+plot(1:n,y,type="l",xlim=c(1,n),xlab="",ylab="",ylim=c(-1.4,1.4))
+polygon(c(1:n,rev(1:n)),c(fit$fitted+qnorm(1-0.05/2)*sigma2, rev(fit$fitted-qnorm(1-0.05/2)*sigma2)),
+        col=cmp2[2],border=NA)
+lines(y)
+title(xlab="Period",line=2.5)
+
+```
+
+This does a much better job at describing the variability of the time series. Now the conditional variance changes over time, the series is **heteroscedastic**. Regression, the various averages, and ARIMA are build on the assumption that a constant variance is sufficient to explain the randomness in the data. **GARCH is designed to deal with heteroscedastic cases**. 
+
+We now look at modelling the time series as a **two-step** process: 
+
+1. **Model the conditional expectation** - with a regression, ARIMA, or any forecasting method (or random walk for asset returns).
+
+2. **Model the variance of the residuals of the model** that described the conditional expectation, so the conditional variance of the series, and we do that with a GARCH. 
+
+Before we go in the details of the GARCH model, I want to clarify two important concepts: **parametric** and **non-parametric**. I have mentioned in passing that we have assumed the noise to follow a normal distribution. Based on that, I am using the standard variance formula, and I am also getting from the normal distribution the factors that I need to multiply with to get the prediction intervals, e.g., 1.96 for 95% intervals. **The fact that I am assuming a distribution makes this modelling parametric and now I only need to know the mean and the variance of the distribution to know everything.** I can write for the innovation term (noise) 
+$$\varepsilon_t \sim \mathcal{N}(0,\sigma^2)$$
+that is, it follows a normal distribution with a zero mean and a variance $\sigma^2$. I can also write the equivalent for the time series $y_t$
+$$y_t \sim \mathcal{N}(\hat{y}_t,\sigma^2)$$
+$$\hat{y}_t = some\ ARIMA$$
+The time series is again normally distributed, but now the conditional mean is the model prediction, the conditional expectation. Look at the figure that plots the conditional and the unconditional distributions. The blue distributions, the conditional ones, are exactly the equation I wrote above. The distribution is located where the forecast says $\hat{y}_t$ with a constant variance $\sigma^2$. That would be what a regression or an ARIMA. We can relax it one step further and say that
+$$y_t \sim \mathcal{N}(\hat{y}_t,\sigma_t^2)$$
+$$\hat{y}_t = some\ ARIMA$$
+$$\sigma_t^2 = some\ GARCH$$
+Always $y_t$ is distributed normally, although the characteristics of the normal distribution change over time. Because of this we can say that the interbals are: forecast (conditional mean) + factor from the distribution $\times$ conditional standard deviation
+
+One could assume different distributions as well, for example, log-normal, gamma, or some other exotic distributions. The logic stays the same.
+
+What is a non-parametric then? Now we do not assume that there is a distribution and we try to find things directly from the data. Look again at the figure with the conditional and unconditional distributions. The red one, the unconditional, is not one of the standard distributions. This is inferred empirically from the data, and we do not have a neat equation to describe it. Writing the variance for this is meaningless. If I wanted to get intervals, I would try to estimate the quantiles of that empirical distribution directly. The details do not matter, but it is helpful to understand the underlying connection between the assumption that things are distributed normally and all modelling we have seen so far. Without it, many of the equations fall flat. 
+
+# GARCH model
+Before we write down the equations for a GARCH we need to recall what is the standard normal distribution. Let's assume we have some data that are normally distributed $x_i \sim \mathcal{N}(\mu,\sigma^2)$. I can normalise $x_i$ in the following way:
+$$z_i = \frac{x_i - \mu}{\sigma^2}$$
+where $\mu$ can be approximated by the sample mean, and $\sigma^2$ can be approximated by the sample variance. Why do we bother with this? For the normalised values we have $z_i \sim \mathcal{N}(0,1)$. So what? Well all the tables we have for distributions are written for zero mean and unit variance. Normalising stuff made things easier before we could just ask a computer to give us the numerical values, as we could always use the same tables. 
+
+Why do I mention this? Consider what we write when we want to get the prediction intervals. We add the forecast (so we add a mean) and we multiply with the forecast standard deviation. What we are really doing is getting the 1.96 (for a 95% interval) for the normal distribution with zero mean and unit variance, and then just scaling it back from $z_t$ to $y_t$ by multiplying with $\sigma$ and adding back the mean $\hat{y}_t$.
+
+(Sidenote: technically, normalising things helps in the estimation as well. For the intuition of this, remember in the first set of notes about regression, where we briefly looked at what choosing the parameters on the minimium squared errors means. There was a (convex) curve that represented the squared error and the optimal parameter was at its minimum. If I have normalised data the distances in that curve are small and that helps a lot the optimisation algorithm that tries to find numerically the size and direction of how to move on that curve. If the data were not normalised the arbitrary scale of the data would affect the size of the errors, which could introduce numerical complications for the optimisation algorithm. Since the scale does not matter, but it is the shape of the curve that matters, by normalising we make our lives easier.)
+
+All this long introduction to write the following: **with GARCH we prefer to model the scale of the normalised errors, $\sigma_t$, instead of the raw forecast errors**, so we have:
+$$e_t = \sigma_t z_t$$
+where $e_t$ are the forecast errors, $\sigma_t$ is their standard deviation that is used to scale a normalised random (noise) distribution $z_t \sim \mathcal{N}(0,1)$ that are identically and independently distributed (referred to with the acronym i.i.d.). We want $z_t$ to be i.i.d. so that there are no correlations between two different periods, so that it has always constant variance. This i.i.d. will become important later. (We do not do anything about the mean, since these are forecast errors, and the mean is taken care off by the forecasting model, before we do anything with the GARCH.)
+
+If $z_t$ is random noise with known variance of 1, then the only thing that needs modelling there is the $\sigma_t$. It has an index $t$, so it is a time series. So we can model it as such. We could very easily use an ARIMA to model it. Well, this is exactly what GARCH is. **GARCH is an ARIMA applied on the time series of $\sigma^2_t$ with some restrictions to ensure that always $\sigma_t >0$**. We do we need $\sigma_t >0$? Since that is a standard deviation, it cannot be negative (or zero, since we are in a stochastic world). There is no meaning to a negative standard deviation, as at minimum something can be deterministic with a (conditional) standard deviation equal to zero. 
+
+The general equation for a GARCH(p,q), where p and q are its orders is
+$$\sigma^2_t = \omega + \alpha_1  e^2_{t-1} + \ldots + \alpha_q  e^2_{t-q} + \beta_1  \sigma^2_{t-1} + \ldots + \beta_p  \sigma^2_{t-p} = \omega + \sum_{i=1}^q \alpha_i e_{t-i}^2 + \sum_{j=1}^p \beta_j \sigma_{t-j}^2 $$
+This can be abstracted as 
+$$variance_t = constant + MA\ part + AR\ part$$
+We have a constant $\omega$, this helps with the keeping the variance positive. Recall the effect of having a constant in stationary ARIMA models, it introduces a long term mean that is equal to that constant divided by the sum of the AR coefficients (see the ARIMA notes towards the end). The next part is $\sum_{i=1}^q \alpha_i e_{t-i}^2$, which regresses past errors on the target variable, so that is an MA-thingy. Why do we use $e_t^2$ and not $e_t$ like in ARIMA? Because the left-hand side is a variance. Look at the variance formula we used before, it is based on squared errors. The last part is the $\sum_{j=1}^p \beta_j \sigma_{t-j}^2$, which is a regression on lags of the target variable, the $\sigma^2_t$, so this is an autoregression. If we are careful, we will see that the orders q are MA terms in the GARCH just like in the ARIMA. For the AR terms, in both GARCH and ARIMA p is used for their order, but they do not correspond to exactly the same interpretation. 
+
+It is useful to show the exact mapping to ARIMA, since hopefully the ARIMA is cleaner to understand how it works. First, we return to $e_t = \sigma_t z_t$. We square it and get:
+$$e_t^2 = \sigma_t^2 z_t^2$$
+We subtract $\sigma_t^2$ from both sides:
+$$e_t^2 - \sigma_t^2= \sigma_t^2 z_t^2-\sigma_t^2$$
+Factorise the right-hand side:
+$$e_t^2 - \sigma_t^2= \sigma_t^2 (z_t^2-1)$$
+We set  $v_t = \sigma_t^2 (z_t^2-1)$, and from that we get (solve for $\sigma_t^2$):
+$$\sigma_t^2 = e_t^2 - v_t$$
+We substitute $\sigma_t^2$ with that in the GARCH formulation and we get:
+
+$$\sigma^2_t = \omega + \sum_{i=1}^q \alpha_i e_{t-i}^2 + \sum_{j=1}^p \beta_j \sigma_j^2 $$
+$$ (e_t^2 - v_t) = \omega + \sum_{i=1}^q \alpha_i e_{t-i}^2 + \sum_{j=1}^p \beta_j ( e_{t-j}^2 - v_{t-j}) $$
+
+Break the last sum into two sums:
+$$ e_t^2 - v_t = \omega + \sum_{i=1}^q \alpha_i e_{t-i}^2 + \sum_{j=1}^p \beta_j e_{t-j}^2 - \sum_{j=1}^p \beta_j v_{t-j} $$
+
+We now want to group together the $e_t$ terms (the first and the last sum come together). Note that their summation indices differ, one sums up to $p$ the other sums up to $q$. We define $m=max(p,q)$ and set $\alpha_i=0$ for $i>q$ and $\beta_j=0$ for $j>p$ (so if the term did not exist before, i.e., $i>q$ or $j>p$, put an artificial zero term to make the sum up to $m$ work. Since the term is equal to zero it has no impact):
+$$ e_t^2 - v_t = \omega + \sum_{i=1}^m (\alpha_i + \beta_i) e_{t-i}^2 - \sum_{j=1}^p \beta_j v_{t-j} $$
+Clean up the left-hand side to have only $e_t^2$
+
+$$ e_t^2 = \omega + \sum_{i=1}^m (\alpha_i + \beta_i) e_{t-i}^2 -  \sum_{j=1}^p \beta_j v_{t-j} + v_t$$
+So, we have $m$ autoregressive terms (same variable as the target in the left-hand side) and $p$ MA terns. The plus/minus signs do not really matter as you can place them in the coefficients. The $v_t$ term acts as error in period $t$, and if you remember from in ARIMA the MA is a regression in lagged errors, so here these would be $v_{t-j}$.
+
+Long story short, a GARCH(p,q), is an ARIMA(p+q, 0, p). Why the p's and q's are not consistent between GARCH and ARIMA given that it is really the same model? I guess people really like to make the lives of others difficult, I have no polite things to say here :) 
+
+So implications of this is, if we were to do any data exploration, for instance, to use ACF or PACF plots, we would do that on the series of $e_t^2$. Let's connect this back to the context you are using GARCH models. The series of returns you are modelling is the residuals from an ARIMA (in most cases this would be an ARIMA(0,1,0), the random walk, due to the efficient market hypothesis). Why? Because of all that discussion about the conditional variance of forecasts being the conditional variance of errors, etc., in the beginning of the notes. Once you have your ARIMA residuals, these can still be understood as returns, more precisely the residual returns from the ARIMA (since ARIMA is modelling returns, the residuals of the ARIMA are residual returns - I just carry the units from the time series to the residuals. If these were ice creams, we would have residual ice creams). The GARCH is applied on the residual returns. Because of the GARCH to ARIMA derivation above, the ARIMA-like GARCH is now built on $e_t^2$, i.e., whatever the left-hand side of the equation is. We do the data analysis in that context, whatever is the left-hand side. GARCH will give us the conditional variance of the residual returns, but recall that the conditional variance of the forecast and the conditional variance of the errors/residuals is the same thing. So the GARCH eventually gives us the variance of the returns, which is what we need to make any investment decisions, etc. (A technical note, this whole logic holds only once we use conditional variances. It is not true for unconditional variances. Recall the formulas about variance in the beginning.)
+
+So, if one went to be traditional, they would look at the square of the residuals, and get the ACF and PACF just like below. If you are not using ACF and PACF in your lectures, then this is great, and you can ignore this. It is obsolete anyways. 
+```{r fig.asp=0.2,fig.width=12}
+par(mar=c(4,4,2,1),mfrow=c(1,3))
+plot(1:n,y^2,type="l",xlim=c(1,n),xlab="",ylab="")
+title(xlab="Period",ylab=expression(y^2),line=2.5)
+
+acf(y^2,xlab="",ylim=c(-1,1),main="")
+title(xlab="Lag",line=2.5)
+title(main=expression(paste("ACF on ",y^2)))
+
+pacf(y^2,xlab="",ylim=c(-1,1),main="")
+title(xlab="Lag",line=2.5)
+title(main=expression(paste("PACF on ",y^2)))
+
+```
+
+
+## Identification of GARCH orders
+Well, it is an ARIMA, so we use information criteria, like AIC. Easy! 
+
+We set some maximum orders $p$ and $q$, get the AIC for all the possible combinations and then choose the model that is best. For example, let's model the series of return below. We will try a maximum of 3 for either order. We get all the possible combinations of models (0, 0), (1, 0), (1, 1), ... , (3,3), estimate their parameters, and then calculate the AIC (I am using the rugarch package for R, but I am sure any package you end up using will offer some similar functionality). 
+
+Let's model some returns data. You can visually see that the variance is not constant over time. 
+```{r }
+library(rugarch)
+library(xts)
+
+# Simulate some returns data for 500 days
+set.seed(1)
+spec_sim <- ugarchspec(variance.model = list(model = "sGARCH", garchOrder = c(1, 1)),
+                       mean.model = list(armaOrder = c(0, 0)),
+                       fixed.pars = list(mu=0, omega=0.01, alpha1=0.1, beta1=0.8))
+sim_data <- ugarchpath(spec_sim, n.sim = 500)
+returns <- as.numeric(fitted(sim_data))
+
+# Get some dates
+dates <- seq(from = Sys.Date() - length(returns) + 1, 
+             to = Sys.Date(), 
+             by = "day")
+returns <- xts(returns, order.by = dates)
+
+# Initialise model search
+p_max <- 3
+q_max <- 3
+results <- data.frame(p=integer(), q=integer(), aic=double())
+
+for (p in 1:p_max){
+  for (q in 1:q_max){
+    # Model
+    spec <- ugarchspec(variance.model = list(model = "sGARCH", garchOrder = c(p, q)),
+                       mean.model = list(armaOrder = c(0, 0)))
+    # Fit model (wrapped in try to avoid loop breaks on convergence errors)
+    fit_temp <- try(ugarchfit(spec = spec, data = returns), silent = TRUE)
+    if (!inherits(fit_temp, "try-error")) {
+      aic_val <- infocriteria(fit_temp)[1] # [1] is AIC
+      results <- rbind(results, data.frame(p=p, q=q, aic=aic_val))
+    }
+  }
+}
+
+best_order <- results[which.min(results$aic), ]
+
+par(mar=c(4,4,2,1))
+plot(as.numeric(returns),type="l",xlab="",ylab="")
+title(xlab="Period",ylab="Returns",line=2.5)
+
+```
+
+We estimate all GARCH options for the different orders and list them with their AIC.
+```{r }
+print(results)
+
+```
+The best AIC (lowest) is given by the GARCH with model orders p=3 and q=1. 
+
+The final model looks like this:
+```{r }
+final_spec <- ugarchspec(variance.model = list(model = "sGARCH", 
+                                               garchOrder = c(best_order$p, best_order$q)))
+final_fit <- ugarchfit(spec = final_spec, data = returns)
+print(final_fit)
+
+```
+
+A lot of stuff in the output! Let's look at the important bits. 
+
+First it informs us what is the GARCH model and the model used for the mean of the time series. We get a GARCH(3,1), and an ARIMA(1,0,1) (ignore the extra letters there!). It also tells us that a normal distribution was assumed. 
+
+Then it provides us a table with the parameters. mu is the constant of the ARIMA, ar1 and ma1, are the AR and MA coefficients of the ARIMA. omega is the constant og the GARCH, then we get the alpha1, alpha2, and alpha3 for the forst part of the GARCH and the beta1 for the second part of the GARCH (recall the orders are p=3 and q=1). In that table we get the coefficient under estimate, its uncertainty (standard error), and like with the regression we obtain t-statistics and p-values. You know my view about these p-values. Skip a bit further down, you get a few information criteria. We already selected the best model by optimising for AIC. We could have chosen any of the alternatives, which just give a difference balance between the goodness of fit of a model and its penalty for complexity. Then we have a ton of more statistical tests. The Ljung Box one is interesting, and I will return to it in the next section. 
+
+Here is a view of the modelled $\sigma_t$¨
+```{r }
+par(mar=c(4,4,2,1))
+plot(final_fit,which=1)
+```
+People use a number of different visualisations, depending on the package or software they use. I will try not to confuse things here, and let your lecturer prefer a specific way to plot GARCH outputs. This should really connect with how we use GARCH to support decisions.
+
+However, there is a visualisation that is interesting to check. Recall that said at the beginning, when we introduced the GARCH models we set:
+$$e_t = \sigma_t z_t$$
+We said that the GARCH deal with $\sigma_t$ represented in the orange lines in the plot above (as intervals), but it assumes that $z_t$ is i.i.d. that is it is a normal distribution with no correlations between different periods. We can check this to validate that the model makes sense. If the $z_t$ is not normal and i.i.d., then we should either revise the model (if possible), or throw it away and use something else. More on that in the next section. For now, below we have a plot of $z_t$ as a distribution.
+
+```{r }
+par(mar=c(4,4,2,1))
+plot(final_fit,which=8)
+
+```
+Looks okay-ish. With limited sample we never expect things to look perfect.
+We can also look at the ACF of $z_t$ looking for no significant correlations between lags. Recall that the ACF values are simply the correlation between now (period $t$) and a past lag. Each bar corresponds to the correlation of a specific lag. The two horizontal lines signify the confidence intervals, so any bar outside of these lines suggests that there is some statistically significant correlation in $z_t$. (The ACF is explained, hopefully a bit better, in the first set of notes, on regression.)
+
+```{r }
+par(mar=c(4,4,2,1))
+plot(final_fit,which=10)
+
+```
+
+Nothing is outside the two confidence intervals, so we can conlcude that the $z_t$ is indeed normally distributed and i.i.d. (In principle you could also look at the ACF of the squared residuals. When we connected the GARCH to ARIMA, we started from $e_t = \sigma_t z_t$, but immediately worked with the squares of that. Hence both are meaningful.)
+
+Let's shift to the forecast. First we look at the evolution of the mean in the future:
+```{r }
+fct <- ugarchforecast(final_fit, n.ahead = 50)
+
+par(mar=c(4,4,2,1))
+plot(fct, which = 1, main = "Forecasted Returns")
+
+```
+What do we see here? The red line going slightly downwards is due to the ARIMA. Since the ARIMA is stationary, eventually it will taper out to a flat line. Recall, this is the conditional expectation, it should not look like the observations that have noise, but rather like the underlying structure of the time series that should be noise free. 
+
+Now let's plot the forecasted $\sigma^2_t$, the modelling focus of GARCH.
+```{r }
+fct <- ugarchforecast(final_fit, n.ahead = 50)
+
+par(mar=c(4,4,2,1))
+plot(fct, which = 3, main = "Forecasted Volatility")
+
+```
+
+The long-term volatility eventually tapers off at the long term mean. Recall we have the $\omega$ in the model. The long term mean is not exactly the $\omega$, but that scaled by the AR coefficients (as mentioned above, look towards the end of the ARIMA notes). That evolving $\sigma_t$ is what goes in producing the yellow region in the previous plot. 
+
+Here the forecast is for 50 periods (days), so it is not unreasonable that the forecast becomes "boring" so many periods in the future. With no shocks coming from the noise, the minimal structure captured by the GARCH (minimal in the sense that it is only some AR and MA terms, without any explanatory variables, etc.) there is not too much that the forecast can use as it goes further and further in the future. 
+
+An interesting term that I only mentioned in passing in the ARIMA notes, is the idea of **mean reversion**. Stationary univariate models (no explanatory variables), in the long term will tend to go to some mean, and stay there. Here is how this ends up being the case for these models. Let's take a very simple ARIMA model that has a single AR term With a coefficient of 0.6. Its forecast is
+$$\hat{y}_t = 0.6 y_{t-1}$$
+No matter what is the value of $y_{t-1}$ the forecast $\hat{y}_t$ will be 0.6 times of that. There is no noise here, as I am making a forecast (I do not know the noise in the future. Technically the expectation of noise is equal to zero, so we add a zero there). Let's make a two-step ahead forecast, now we have 
+$$\hat{y}_{t+1} = 0.6 \hat{y}_{t} = 0.6 (0.6 y_{t-1}) = 0.36 y_{t-1}$$
+As you can see this is only 0.36 of the last observation we have (all I did was replace the previous equation for $\hat{y}_t$ into this one). If I continue for a few more steps ahead, there will only be a very small fraction of $y_{t-1}$ left, with the forecast being close to zero. If the ARIMA has a constant, then the mean-reversion would end up being the long-term mean. This holds for both ARIMA and GARCH, since, in principle,  they are the same model. This is exactly what we see in the figure above. As the forecast horizon increases from 1 to 50 steps ahead, eventually the forecasted $\sigma_t$ ends up to the long-term mean, that depends on $\omega$ and the AR coefficients. 
+
+## We are never safe from p-value maniacs!
+Many textbooks and papers argue that we need to use a thing called the Ljung-Box test. Let's understand what is going on here. 
+The Ljung-Box Q-test (as is the full name!) is used to determine whether a group of autocorrelations in a time series are significantly different from zero. Recall that we want the $z_t$ to be i.i.d., that is no autocorrelations. Instead of testing each lag individually, as we kind of did with the ACF plot above, it tests the "overall" randomness of the series over a specified number of lags.
+
+I will not introduce the statistical test here. I am not in favour of corrupting models with p-value madness, so unless your lecturer goes in that direction, I do not want to confuse things more. In principle it is a scaled sum of the autocorrelations (so imagine summing up all the bars in the ACF plot together) and then comparing that statistic against some distribution to get a p-value as usual. 
+
+What is more interesting is the outcomes of the testing:
+
+- A high p-value ($> 0.05$ - don't get me started on how arbitrary that 0.05 is!): You fail to reject the null hypothesis, so there are no issues with the residuals. A modelling job well done! 
+
+- A high p-value ($< 0.05$): This indicates that the residuals still have some (autoregressive) information in there. It may be because you have the wrong orders in the model, because the assumed distribution (normal) is wrong, often implying that the symmetry assumed by GARCH is wrong (the upper and lower prediction intervals are equidistant to the conditional mean, they could just as well not be!). It may also be that the GARCH is just useless for this time series. 
+
+In principle all this sounds fine. So, what many will argue is that you can identify your GARCH orders based on AIC or some other information criterion as we did above. Then, once you have your final model, run the Ljung Box test and see if the model passes the test. If not fiddle with the orders again until it passes the test. In my view, this shows a fundamental lack of understanding of modelling! 
+
+The short, non-technical story is that AIC model building does not mix with p-value model building, because they push the model to completely different directions, so you end up being suboptimal in both. AIC tries to balance the bias-variance trade-off of the model, i.e., tries to have just enough model complexity so that it does not under- or overfit to the data. p-values are tuypically more concerned with the quality of the estimation, not whether you model overfits or underfits. 
+
+Recall the discussion in the regression notes, where we showed that one can include random variables and many of the statistics will be quite happy. The issue there is that we were overfitting to the noise in the data. The flaw becomes visually apparent when we overdo it, but if you recall we looked at the variability of the coefficients as the sample changes for small and large models. The large models were more variable. This is the increased model variance in the bias-variance trade-off in the regression notes. If we were to opt for a small model, then we stabilise the coefficients, but then we may not caprture enough of the structure of the data, having a very biased solution, which is an under-fit solution. The bias-variance trade-off tells us that we should opt for the model that balances these two sides, which is what information criteria try to do. ("try" is key here, there is no gaurantee that they will succeed! In 2026 we have better approaches, like shrinkage estimators, but since I did not see that in your topics, I will not give you additional headaches with that - unless you want of course! Shrinkage estimators are great!).
+
+So suppose we have a model that AIC says this is good. And then we start tweaking it to make it work with Ljung-Box as well. We will change its orders, we will end up either increasing the model variance, or the model bias. In either case, when we have made the model to pass the Ljung Box test, we cannot trust its coefficients for unseen data, i.e., for the future periods. The $\sigma_t$ will be the outcome of problematic coefficients, so we end up using a problematic $\sigma_t$. (Obviously, the issue becomes larger the more we move away from the minimum AIC. Consider that we did not try all possible modelling options, for instance in the previous example we examined orders up to 3. What about maximum order 4, or 5, and so on. So, our minimum AIC model is not a dogma either! Small changes may be worthwhile to explore.) So, if you make the Ljung-Box test happy, you ensure the quality of $z_t$ at the cost of the coefficients that predict the $\sigma_t$. If you know your model fails your Ljung-Box, then your $z_t$ is not i.i.d., and so although your $\sigma_t$ is fine, the product  $\sigma_t z_t$ that is the starting point of GARCH is not fine. Your forecast is again risky. 
+
+So what do we do? When a model fails the Ljung-Box this is useful information, telling us to try different models, not different orders of the same model. We could try other distributions than the normal distribution for $z_t$ (nothing changes in the theory of what has been discussed so far!), or replace the GARCH with something else. My first choice would be to try assymetric GARCH variants, which give a different volatility for positive and negative returns (so you do not just have $\pm \sigma$ for your prediction intervals, but you end up with two different standard deviations), like the GJR-GARCH. (I do not think it is helpful to discuss that, unless your lectures go there!)
+
+## Coefficient restrictions for GARCH
+Since GARCH is modelling the $\sigma_t^2$ we have to ensure that it provides us with positive values. This effectively means that the model coefficients have to be restricted. 
+
+- The constant $\omega > 0$
+
+For GARCH(1,1), that is fairly simple;
+
+- The $\alpha \geq 0$ must be non-negative.
+
+- The $\beta \geq 0$ must be non-negative.
+
+We also need things to be stationary, which adds:
+
+- $\alpha + \beta < 1$
+
+If the sum becomes one, then we have a unit root, and just like with ARIMA we need to treat it with differences (otherwise the $\sigma_t^2$ is a random walk). Like with ARIMA, higher non-stationarities can be treated with differencing (up to a point). 
+
+In the GARCH(1,1) the long-term mean of the model is:
+$$\sigma^2 = \frac{\omega}{1 - (\alpha + \beta)}$$
+Consider what happens in the long-term mean if $\alpha + \beta \geq 1$. It is either undefined (divide by zero), or meaningless (negative $\sigma^2$). That is: there is no long-term mean, which is exactly the definition of non-stationarity. 
+
+For higher order GARCH the intuition of the restrictions remains the same, but they become more complicated due to the additional lags (still simpler than ARIMA, due to the positivity constraints!). So we have:
+
+- $\omega > 0$
+
+- $\alpha_i \geq 0$ for $i = 1, \dots, q$
+
+- $\beta_j \geq 0$ for $j = 1, \dots, p$
+
+and
+
+- $\sum_{i=1}^q \alpha_i + \sum_{j=1}^p \beta_j < 1$ for stationarity.
+
+I should say here that these restrictions have been shown to be too strict, where it is possible to have some coefficients $\alpha_i$ and $\beta_j$ negative and still obtain $\sigma_t^2>0$. For me, at the end of the day, if I want the model to search the complete space of parameters, I convert it to an ARIMA (recall the difference in orders in that case) and then check the AR and MA characteristic polynomials, as briefly discussed in the ARIMA notes. This is rather technical, and to be fair, the key intuition is that coefficients must be such, so that $\sigma_t^2>0$. The rest is handled by the computer. 
+
+I think this covers the basics of GARCH, it is just an ARIMA in disguise, which itself is just a regression in disguise, which is just a fancy average. I really do not see why people fuss about all these things and spend a whole acadmemic career becoming experts in predictive modelling, if it is just an average! :)
+
+**Good luck!**
