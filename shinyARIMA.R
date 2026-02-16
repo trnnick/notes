@@ -85,6 +85,11 @@ ui <- fluidPage(
     ),
     
     mainPanel(width = 9,
+      wellPanel(
+        style = "background-color: #ffffff; border: 1px solid #ddd; text-align: center; ; padding: 0px 0px;",
+        #tags$h5("Simulated Data Generating Process (DGP)"),
+        uiOutput("arimaEq")
+      ),
       plotOutput("tsPlot", height = "400px"),
       br(),
       fluidRow(
@@ -139,6 +144,49 @@ server <- function(input, output, session) {
     list(train = subset(ts_data, end = input$n_train), test = subset(ts_data, start = input$n_train + 1),
          ar = ar_vec, ma = ma_vec, p = input$p, d = input$d, q = input$q, full = ts_data)
   }, ignoreNULL = FALSE)
+  
+  output$arimaEq <- renderUI({
+    res <- sim_results()
+    req(res)
+    
+    prefix <- "\\color{#377EB8FF}{AR}\\color{#999999FF}{I}\\color{#A65628FF}{MA}: "
+    
+    i_part <- if(res$d == 0) "" else paste0("\\color{#999999FF}{(1-B)^{", res$d, "}}")
+    
+    ar_terms <- if(length(res$ar) > 0) {
+      paste0(sapply(seq_along(res$ar), function(i) {
+        val <- res$ar[i]
+        paste0(ifelse(val >= 0, " + ", " - "), "\\color{#377EB8FF}{\\mathbf{", abs(round(val, 3)), "}} y_{t-", i, "}")
+      }), collapse = "")
+    } else ""
+    
+    ma_terms <- if(length(res$ma) > 0) {
+      paste0(sapply(seq_along(res$ma), function(i) {
+        val <- res$ma[i]
+        paste0(ifelse(val >= 0, " + ", " - "), "\\color{#A65628FF}{\\mathbf{", abs(round(val, 3)), "}} \\varepsilon_{t-", i, "}")
+      }), collapse = "")
+    } else ""
+    
+    lhs <- paste0(i_part, " y_t")
+    
+    # equation <- paste0(
+    #   "$$\\begin{aligned} ", 
+    #   prefix, " & ", lhs, " = ", ar_terms, " \\\\ ",
+    #   " & ", ma_terms, " + \\varepsilon_t ",
+    #   "\\end{aligned}$$"
+    # )
+    equation <- paste0(
+      "$$", prefix, lhs, " = ", ar_terms, ma_terms, " + \\varepsilon_t", "$$"
+    )
+    
+    equation <- gsub("=  \\+", "= ", equation)
+    
+    tags$div(
+      style = "overflow-x: auto; overflow-y: hidden; width: 100%; padding: 10px 0;",
+      withMathJax(helpText(equation))
+    )
+    # withMathJax(helpText(equation))
+  })
   
   diag_data <- reactive({
     req(sim_results())
