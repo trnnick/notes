@@ -1,0 +1,436 @@
+---
+title: 'Time Series Exploration and Exponential Smoothing with R'
+author: "Nikolaos Kourentzes (<nikolaos@kourentes.com>)"
+output:
+  pdf_document: 
+    toc: true
+    number_sections: true
+    toc_depth: 2
+    fig_width: 6
+    fig_height: 4.5
+    fig_caption: false
+  word_document: default
+  html_document: default
+geometry: margin=0.75in
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Basic R computations
+In this workshop we will learn some basic forecasting in R. To do this we will also get used to some basic R syntax and computations.
+
+To execute a line in R we place the cursor at that line and press **Ctrl+Enter** (or **Command+Enter** in Mac OS). We can also select part of the code (including multiple lines) and execute it in the same way. Anything after `#` is a comment, so it is not executed. Any code that is executed and its result will be reported in the console window. The lab notes are written so that you can copy and paste code from this page to R and execute them. You can compare the results with the outputs reported here. 
+```{r, eval = FALSE}
+# This line is a comment! The following line is not
+1+1
+1+1 # I can also have comments, together with commands. Anything after # is ignored.
+```
+
+To assign a value to a variable in memory we use the symbol `<-`. For example to assign to variable `a` the value 5 we write:
+```{r, results = 'hide'}
+a <- 5
+```
+If you write `A = 5`, you will get the same result, but it is good practice to avoid using the symbol `=`, as this is used for a different purpose in R (to assign values to functions).
+
+Let us assign the value 2 to variable `b`:
+```{r, results = 'hide'}
+b <- 2
+```
+Now we can perform some basic computations, like addition, subtraction, multiplication, division:
+```{r}
+a + b  # addition
+a - b  # subtraction
+a * b  # multiplication
+a / b  # division
+```
+We can also store the result in a new variable `total`, like this:
+```{r}
+total <- a + b
+```
+Note that the result is not printed on the console, as it is stored to a variable instead. We can get the result by simply typing `total` or `print(total)`:
+```{r}
+total
+print(total)
+```
+The command `print()` is a function, which is some code to do a specific task. You will know that I am referring to a function because it will always be followed by (). All functions have a common syntax, that is function(...), i.e. the function name, followed by brackets that contain the input arguments. If there are several arguments, these are separated by commas. For example:
+```{r}
+sum(a,b)
+```
+To compare two results I can use `==`, for example:
+```{r}
+total == sum(a,b)
+total == a - b
+```
+A final very useful command that we will see before we jump into some forecasting is `c()`. This is useful to collect several values/variables into a single variable. For example:
+```{r}
+c(5,8)
+all <- c(a,b,total)
+print(all)
+```
+For any function, you can type it, select it and press F1 to bring up its help page, or type it with a `?` in front. For example:
+```{r, eval = FALSE}
+?sum
+```
+
+# Loading packages into R
+R is a great analytics tool because of the vast number of packages that implement rather complicated code in an easy to use way. There are quite a few useful packages for time series forecasting, the most popular is **forecast**. A list of the various packages useful for forecasting can be found [here](https://cran.r-project.org/web/views/TimeSeries.html). We will also be using the package **tsutils** to help us with time series exploration tasks. 
+
+We load a pre-installed package in the memory using the `library()`. This will most probably give an error, but it is fine, read on to understand why!
+```{r, results = 'hide', warning = FALSE}
+library(forecast)
+```
+There is a good chance that the first time you want to use a package it is not installed on your computer. In this case, you need to install the package manually. This is a one-off process and you do not need to re-install the package again. However, from time to time packages are updated to introduce new functionalities and fix bugs. Installing and updating packages in Rstudio is very easy and can be done with the command:
+```{r, eval=FALSE}
+install.packages('forecast')
+# We still need to load the package
+library(forecast)
+# We repeat the same for the tsutils package
+install.packages('tsutils'); library(tsutils)
+# Note that I used ; to have several commands in the same line.
+```
+We can get documentation about a package using: 
+```{r, eval=FALSE}
+?'forecast-package'
+```
+Packages typically come with several functions and sometimes datasets.
+
+# Loading data into R
+There are many alternatives on how to load data in R. A very easy way is to save your data in a comma-delimited data file (.csv) in Excel and then load it to R. You can import Excel files directly or use .Rdata file, which is the native file format for R. Lookup online for ready code to load data from whatever source you need. There are way far too many tutorials online!
+
+We will load some data from a prepared .csv file and store the data into a variable called `Y`. (Use the Rstudio menu to find the right path for the dataset. Go to *Session* -> *Set Working Directory* -> *Choose Directory...* and select the folder where you have saved the data.)
+```{r, results = 'hide'}
+Y <- read.csv("./workshop1R.csv")
+print(Y) # The result is not shown here!
+```
+The file contains 8 columns, and each column is a time series of 60 months long.
+To get the names of the columns/time series:
+```{r}
+colnames(Y)
+```
+As you can see, we have to model some series with a known structure. Nonetheless, we will treat them as series with unknown structure. As an example, we will model one of them, Level_A. Using the same approach you can model the rest. 
+
+First, let us take that series from the matrix of data. We will store in variable `y` (in contrast to capital `Y` that has all series). 
+```{r}
+y <- Y[,1] 
+print(y)
+```
+The syntax `[,1]` means take all rows and the first column of `Y`. We could for example say we want rows 1-10 and columns 3-4 by typing `Y[1:10,3:4]`. Or we could take rows 1 and 5 from all columns by typing `Y[c(1,5),]`. Give these a try to understand the logic. 
+
+If want to try another series you simply choose a different column in `Y`, for example, `Y[,2]`. For the sake of this example, let us proceed with the first column for now. 
+
+Currently `y` is a vector of values. Let us tell R that this is a time series by using the function `ts()`
+```{r}
+y <- ts(y,frequency=12)
+print(y)
+```
+The argument `frequency=12` tells `ts()` that this time series has 12 observations per season, i.e. it is monthly data. We could also specify the start or end date if it was known. For our purpose let us assume that the data end in November.
+```{r}
+y <- ts(y,frequency=12,end=c(2018,11))  
+# The syntax of end is c(Year,Month), or more generally
+# c(season,seasonal period).
+print(y)
+```
+We can easily plot the time series with the function `plot()`, if we did not convert `y` to a time series plot would behave very differently
+```{r, out.width = "60%"}
+plot(y)
+```
+
+# Constructing estimation and hold-out sets
+For any model building exercise, it is useful to set aside some holdout data, to test the outcome of your modelling. This step is very important in the initial setup of the forecasting process, i.e. specifying a model for a time series, but naturally, when we want to produce a true forecast for the upcoming months we use all data, using the model/approach we evaluated as best in the hold-out sample. 
+
+We will keep as hold-out (or test set) the last year. For this the function `tail()` can help us, which keeps the last n observations. This function behaves differently if the **forecast** package is not loaded, so make sure that you have followed that step above.
+```{r}
+y.tst <- tail(y,12)
+print(y.tst)
+```
+The rest is kept as fitting (or estimation or training) set. The function `head()` is the opposite of `tail()`. 
+```{r}
+y.trn <- head(y,48)
+print(y.trn)
+```
+
+When splitting ts objects (time series objects that hold date and frequency information), then the functions `head()`, `tail()`, `window()` retain this information. Other ways to split the series, such as `y[1:48]` will not carry forward this information and the data must be specified as a ts object again. For example:
+```{r}
+yy <- y[1:48]
+print(yy)
+```
+Variable `yy` is no longer a ts object. We can use the function `class()` to see this.
+```{r}
+class(y) # Our time series object
+class(yy) # A simple vector of numeric values
+```
+But we can always carry the properties to yy:
+```{r}
+yy <- ts(yy, frequency=frequency(y), start=start(y))
+print(yy)
+class(yy)
+```
+This is now the same as `y.trn`. We can use `==` to compare
+```{r}
+yy == y.trn
+all(yy==y.trn) # all() provides the overall logical comparison result
+```
+
+# Exploring a time series
+There are a few alternative ways to do that, using different packages. For this we will be using the **tsutils** package. We loaded this before, but just in case, we can call it again.
+```{r}
+library(tsutils)
+```
+
+First, we calculate a Centred Moving Average and plot it. Note that we will be using `y.trn` and not `y.tst` or the complete `y`.
+```{r, out.width = "60%"}
+cma <- cmav(y.trn,outplot=1) # The argument outplot produces a plot
+```
+
+This function extrapolates the CMA values for the first few and last observations that we cannot calculate from the data. This is done by fitting an appropriate exponential smoothing model. The order of the average is taken automatically from the frequency argument of the time series. 
+
+> **Question**: Is this time series trended?
+
+If needed, the variable `cma' contains the CMA calculated values. 
+```{r}
+print(cma)
+```
+
+Next, we proceed to explore the seasonality of the time series. To produce a seasonal diagram we can use the function `seasplot()`. This will detrend the series, if needed, and produce the seasonal plot. It will also provide a p-value for the presence of seasonality. Do not trust the p-value more than you trust your eyes! It is there only for automation, but not as reliable as your critical thinking!
+```{r, out.width = "60%"}
+seasplot(y.trn)
+```
+
+> **Question**: Is this time series seasonal?
+
+The function `seasplot()` provides a few alternative visualisations (see Lecture 1).
+```{r, out.width = "60%"}
+seasplot(y.trn,outplot=2) # Boxplots of the values of each month
+# The average (red) value for each month with a series of each month across years (blue)
+seasplot(y.trn,outplot=3) 
+seasplot(y.trn,outplot=4) # A `connected' boxplot across months.
+```
+
+We can also decompose the time series, using the function `decomp()`. This function is not smart enough to know when there is a trend or seasonality, so it will always assume both components are there. Remember, in decomposition we only remove the trend or the season if it is present! Otherwise, we would be modelling noise. 
+```{r, out.width = "60%"}
+dc <- decomp(y.trn,outplot=1)
+```
+
+# Forecasting
+## Model fitting
+At this point we have established the nature of the time series at hand. We will use the function `ets()` to build exponential smoothing models. `ets()` allows building all standard (30) exponential smoothing models. Remember that the models are codified with 3 letters **ETS(Error,Trend,Season)**, where each Error, Trend, and Season can be (N,A,M), for *None*, *Additive*, and *Multiplicative*. (In fact Error can be only A or M, as all models include an error term). To set a damped trend we need to use the argument `damped=TRUE` (or `damped=FALSE` for linear trend). If no option is specified for damped, then `ets()` decides on its own using the AICc information criterion. The AICc is similar to the Akaike Information Criterion (AIC), adjusted for small sample sizes. 
+```{r}
+# Model ANN is (A)dditive errors, (N)o trend and (N)o season, i.e. the single exponential 
+# smoothing (local level model). 
+ets(y.trn,model="ANN") 
+```
+Observe that the output gives us information about the smoothing parameter (alpha), the initial level (l), and the standard deviation or the errors (uncertainty; sigma). It also presents results on various information criteria. 
+
+We store the model in a variable in the memory:
+```{r}
+fit1 <- ets(y.trn,model="ANN")
+print(fit1)
+```
+
+We can also produce a plot of the model using `plot()`:
+```{r, out.width = "60%"}
+plot(fit1)
+```
+
+This plot shows the modelled time series components. Personally, I do not find this graph to be particularly helpful. We will produce an alternative one, but before that, we need to understand what is stored in `fit`, which is a list of variables that stores all the model information. We will use the function `names()` to extract the names of the variables stored in `fit1`. This function is appropriate for lists. 
+```{r}
+class(fit1)
+# names gives you the variables in the list fit1, an object ets (the result of class) is a list. 
+names(fit1) 
+```
+
+Observe that one of the variables is called `fitted`, this contains the fitted values in the historical data. To access this variable we use the dollar sign, `$`, for example: 
+```{r}
+fit1$fitted
+```
+
+Now, let us return to plotting the result of the model fitting. We will use functions `plot()' and `lines()`. The latter allows us to add lines to an existing plot.
+```{r, out.width = "60%"}
+plot(y.trn)
+lines(fit1$fitted, col="red") # col=... specifies the colour of the line
+```
+
+> **Question**: Given your understanding of single exponential smoothing, is this a good model fit? Does the forecast look "smooth"? What should we do with the alpha parameter?
+
+Let us try a different alpha.
+```{r, out.width = "60%"}
+fit2 <- ets(y.trn, model = "ANN", alpha = 0.1)
+plot(y.trn)
+lines(fit2$fitted,col="blue")
+```
+
+We can try different values for alpha until we are happy. If we do no specify an alpha, the value we get is the one that minimises the in-sample Mean Squared Error (MSE), which was the case for `fit1`. In fact, we can extract the in-sample MSE and compare:
+```{r}
+fit1$mse
+fit2$mse
+```
+
+So the optimiser correctly suggests the alpha to be `r round(fit1$par[1],4)`, as it gives the minimum in-sample MSE. That may not be true for the out-of-sample MSE, as we will see below. But before we do that, we need to produce some out-of-sample forecasts!
+
+## Forecasting
+We can generate forecasts using the function `forecast()`, which has two necessary arguments, the fitted model and the forecast horizon (`h`)
+```{r}
+frc1 <- forecast(fit1, h=12)
+print(frc1)
+```
+
+Observe that it gives us a point forecast, and lower (Lo) and upper (Hi) prediction intervals. By default, it gives us the 80% and 95% intervals. We can control that with the argument `level=...` that by default is `level=c(80,95)`. We can get a plot of everything using `plot()`:
+```{r, out.width = "60%"}
+plot(frc1)
+```
+
+I find it helpful to add the in-sample fit as well:
+```{r, out.width = "60%"}
+plot(frc1)
+lines(fit1$fitted,col="red")
+```
+
+The `frc1` variable, where we stored the forecasts, is a list. Therefore, we can use `names()` to see what it contains.
+```{r}
+names(frc1)
+```
+
+The variable `mean` contains the point forecasts, and the `upper`/`lower` the prediction intervals. Let us superimpose the forecasts from 'fit2' on the same plot, as well as the out-of-sample data. 
+```{r, out.width = "60%"}
+frc2 <- forecast(fit2,h=12) # Store the  forecasts
+plot(frc1)
+lines(fit1$fitted,col="blue")
+lines(frc2$mean,col="red")
+lines(fit2$fitted,col="red")
+lines(frc2$lower[,2],col="red")  # 95% lower 
+lines(frc2$upper[,2],col="red")  # 95% upper
+lines(y.tst,lty=2)  # lty=2 gives us a dashed line. 
+# Add legend to the plot
+legend("topleft",c("Forecast 1","Forecast 2"),col=c("blue","red"),lty=1)   
+```
+
+So although the point forecasts are very similar the model that produces a smoother model fit, also provides narrower (overall) intervals.
+
+> **Question**: Which is the best forecast?
+
+We should **never** select between forecasts using the out-of-sample errors. However, we can use these to evaluate whether our selection was correct after all. Let us use Mean Absolute Error (MAE).
+```{r}
+MAE1 <- mean(abs(y.tst - frc1$mean))
+MAE2 <- mean(abs(y.tst - frc2$mean))
+MAE <- c(MAE1, MAE2) # Collect them in a single vector
+names(MAE) <- paste0("Forecast ",1:2) # Name the errors
+round(MAE,3) # round to 3rd decimal point
+```
+
+So going for the smoother in-sample forecast, with the somewhat lower alpha value, gave us a lower forecast error. This is not true in general and here I only got suspicious because I found that the fitted values of `fit1` looked somewhat too wiggly for my liking. *Yes, this is not scientific at all!* But what is scientific is that the series is level, with no peculiar events, so ideally I want a long average and therefore a small alpha value: it is all down to exploring your data!
+
+<!-- ## Model selection -->
+<!-- What about comparing between alternative exponential smoothing models? Let us fit a more complex model, ETS(A,A,A) with damped trend: -->
+<!-- ```{r} -->
+<!-- fit3 <- ets(y.trn, model= "AAA", damped=TRUE) -->
+<!-- frc3 <- forecast(fit3,h=12) -->
+<!-- print(fit3) -->
+<!-- ``` -->
+
+<!-- The new model, `fit3`, has more components and therefore reports values for alpha, beta, gamma and phi, as well as the initial values. We construct the relevant plot: -->
+<!-- ```{r, out.width = "60%"} -->
+<!-- plot(frc1) -->
+<!-- lines(fit1$fitted,col="blue") -->
+<!-- lines(frc3$mean,col="red",lwd=2) # lwd=2 makes the line thicker -->
+<!-- lines(fit3$fitted,col="red") -->
+<!-- lines(frc3$upper[,2],col="red") -->
+<!-- lines(frc3$lower[,2],col="red") -->
+<!-- lines(y.tst,lty=2)   -->
+<!-- legend("topleft",c("Forecast 1","Forecast 3"),col=c("blue","red"),lty=1) -->
+<!-- ``` -->
+
+<!-- > **Question**: What do you expect to be the performance of this forecast? Better or worse than the other two options? Remember the time series does not contain either trend or seasonality.  -->
+
+<!-- We calculate the out-of-sample errors: -->
+<!-- ```{r} -->
+<!-- MAE3 <- mean(abs(y.tst - frc3$mean)) -->
+<!-- round(MAE3,3)  -->
+<!-- # The erros from before were: -->
+<!-- round(MAE,3) -->
+<!-- ``` -->
+
+<!-- No surprises here, the wrong model has higher errors, as it overfits to the in-sample data. We repeat the same for the Root Mean Squared Error: -->
+<!-- ```{r} -->
+<!-- MSE1 <- mean((y.tst - frc1$mean)^2) -->
+<!-- MSE2 <- mean((y.tst - frc2$mean)^2) -->
+<!-- MSE3 <- mean((y.tst - frc3$mean)^2) -->
+<!-- MSE <- c(MSE1, MSE2, MSE3) # Collect them in a single vector -->
+<!-- RMSE <- sqrt(MSE) # We calculate the Root Mean Squared Error  -->
+<!-- names(RMSE) <- paste0("Forecast ",1:3) # Name the errors -->
+<!-- round(RMSE,3) # round to 3rd decimal point -->
+<!-- ``` -->
+
+<!-- RMSE gives us different numerical results, but qualitatively the same as MAE. Again, this is not always the case and different error metrics may differ in their rakings of competing forecasts.  -->
+
+<!-- All models have provided us with AIC values *(We will learn about AIC values in Lecture 3! You can return to this part once we have covered this)*. We could use these to automatically compare the models and choose the one that offers the best compromise between model fit and complexity. Remember that when we used `names()` on `fit1` there was a variable `fit1$aic`, which contains the AIC value for that model. The same is true for `fit2` and `fit3`. There are results for BIC and AICc too. Let us collect them all and compare the models. To do this we will use a new type of variable, an *array*, which can have multiple dimensions: -->
+<!-- ```{r} -->
+<!-- crit <- array(NA,c(3,3)) # This will create a 3x3 array with NA (Non-Arithmetic) values -->
+<!-- print(crit) -->
+<!-- # Good practice is to name your array dimensions. We can do that using the dimnames,  -->
+<!-- # which accepts a list as input, where each element of the list contains the names  -->
+<!-- # for each dimension of the array: -->
+<!-- crit <- array(NA,c(3,3),dimnames=list(c("Forecast 1", "Forecast 2", "Forecast 3"), -->
+<!--                                       c("AIC","AICc","BIC"))) # I can split lines! -->
+<!-- print(crit) -->
+<!-- ``` -->
+
+<!-- We store all relevant values to `crit`. The following code snippet is somewhat tedious. I could have used `for` loops to write is only with a couple of lines, but let us not complicate this further for now.  -->
+<!-- ```{r} -->
+<!-- # All values from fit1 - 1st row -->
+<!-- crit[1,1] <- fit1$aic   # 1st column -->
+<!-- crit[1,2] <- fit1$aicc  # 2nd column -->
+<!-- crit[1,3] <- fit1$bic   # 3rd column -->
+<!-- # All values for fit2 - 2nd row -->
+<!-- crit[2,1] <- fit2$aic   # 1st column -->
+<!-- crit[2,2] <- fit2$aicc  # 2nd column -->
+<!-- crit[2,3] <- fit2$bic   # 3rd column -->
+<!-- # All values for fit3 - 3rd row -->
+<!-- crit[3,1] <- fit3$aic   # 1st column -->
+<!-- crit[3,2] <- fit3$aicc  # 2nd column -->
+<!-- crit[3,3] <- fit3$bic   # 3rd column -->
+<!-- # And the result is... -->
+<!-- print(crit) -->
+<!-- ``` -->
+
+<!-- We compare forecasts across the same criterion. In all cases, the second forecast wins (2nd row). This is in agreement with the best-performing out-of-sample forecast! In fact, here I am doing something that is technically wrong. Information criteria can only be used when the model parameters are optimal on the likelihood (read is as MSE), so the row for Forecast 2 should not be there, and I should be comparing only Forecast 1 and Forecast 3. Again, the unnecessarily complex `fit3` loses.  -->
+
+<!-- When we use `ets()` without specifying a model, it compares many alternatives and picks the best automatically. The default settings do that by using the AICc criterion, considering models with additive and additive damped trend, and any seasonality. Some further restrictions in how the errors of the model interact with the time series components (additively or multiplicatively), reduce the potential model from all 30 options to much less. This not only speeds up things, but also makes the specification less prone to fail, with minimal practical effects on accuracy. -->
+<!-- ```{r} -->
+<!-- fit4 <- ets(y.trn) -->
+<!-- print(fit4) -->
+<!-- ``` -->
+
+<!-- The resulting model, as expected, is the level exponential smoothing.  -->
+
+<!-- Looking at the help file of `ets()`, by typing `?ets`, we can see the options it gives us. We can control the model form, the parameters, and many other arguments. One thing we cannot control is the initial values. These are always optimal. -->
+<!-- ```{r, eval=FALSE} -->
+<!-- ?ets -->
+<!-- ``` -->
+
+<!-- **One important thing to remember: the smoothing parameters are in the state-space formulation**. This means that: -->
+
+<!-- * The alpha value is as you know it -->
+<!-- * The beta value is alpha*beta', where beta' is the beta as you know it -->
+<!-- * The gamma value is (1-alpha)*gamma', where gamma' is the gamma as you know it -->
+
+<!-- In practice, the beta you put in the model is much larger than the typical beta we are used to (as the typical beta is multiplied by alpha <1, so it gets smaller). Therefore, do not be surprised by very small beta values. The gamma is again scaled by (1-alpha), so it will be smaller than the gamma in the format we have in the slides. -->
+
+# Exercises
+Practice with the remaining time series in `Y`, for which we know the model forms: `r colnames(Y)`. DO not attempt fitting other models than ETS(ANN) yet! We will cover this in detail. 
+
+1. Retain some data for out-of-sample evaluation.
+2. Perform data exploration. The functions you need to use are: `cma()`, `seasplot()` and `decomp()`. 
+    + Does your understanding of the plots agree with the underlying model?
+3. Forecast using exponential smoothing
+    + Fit exponential smoothing models with automatic and manual parameters. 
+    + Which one is best using your judgement?
+    + Which one is best using errors?
+4. Calculate out-of-sample accuracy. 
+    + Does the selected model perform best in the out-of-sample data?
+5. Finally use some real data to repeat the exercise. You can use the `AirPassengers` time series, by setting `y <- AirPassengers`.
+
+**Remember: R has a fantastic online community. Online you will find answers to almost anything R related!**
+
+**Happy forecasting!**
