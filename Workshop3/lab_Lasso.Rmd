@@ -1,0 +1,189 @@
+---
+title: 'Lasso regression modelling in R'
+author: "Nikolaos Kourentzes (<nikolaos@kourentes.com>)"
+output:
+  pdf_document: 
+    toc: true
+    number_sections: true
+    toc_depth: 2
+    fig_width: 6
+    fig_height: 4.5
+    fig_caption: false
+  word_document: default
+  html_document: default
+geometry: margin=0.75in
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Load dataset
+First, we will load some data. We will use the quarterly Walmart sales. 
+
+```{r}
+x <- ts(read.csv("./Lab3data3.csv"),frequency=4,start=c(2003,1))
+plot(x[,1],ylab="Walmart sales")
+```
+
+# Build a benchmark regression
+
+This section is a summary of the advanced regression part in the previous lab. We go through this to have a benchmark for the lasso regression, and also to construct lags as needed. 
+
+We will retain the last 4 years as a test set and use the rest to build the models.
+
+```{r}
+y.trn <- window(x[,1],end=c(2013,4))
+y.tst <- window(x[,1],start=c(2014,1))
+```
+
+We construct lags, as in the previous workshop. First, we find how many observations we have. 
+
+```{r}
+n <- length(y.trn)
+X <- array(NA,c(n,6))
+# Loop to create lags
+for (i in 1:6){     
+  X[i:n,i] <- y.trn[1:(n-i+1)] 
+}
+# Name the columns
+colnames(X) <- c("y",paste0("lag",1:5))  
+X <- as.data.frame(X)
+head(X)
+```
+
+We build a stepwise regression. To do that we start from the complete model first (`fit1`) and then find the stepwise solution (`fit2`)
+
+```{r}
+# The complete model
+fit1 <- lm(y~.,data=X)  
+# The stepwise model
+fit2 <- step(fit1)
+summary(fit2)
+```
+
+And here is the model fit.
+
+```{r}
+# In-sample fit:
+plot(X$y,type="l")
+frc <- predict(fit2,X)
+lines(frc,col="red")
+```
+
+Let us produce some forecasts. 
+
+```{r}
+# Initialise an array to save the forecasts
+frc1 <- array(NA,c(8,1))
+
+for (i in 1:8){
+  # For the Xnew we use the last five observations as before
+  Xnew <- tail(y.trn,5)
+  # Add to that the forecasted values
+  Xnew <- c(Xnew,frc1)
+  # Take the relevant 5 values. The index i helps us to get the right ones
+  Xnew <- Xnew[i:(4+i)]
+  # If i = 1 then this becomes Xnew[1:5].
+  # If i = 2 then this becomes Xnew[2:6] - just as the example above.
+  # Reverse the order
+  Xnew <- Xnew[5:1]
+  # Make Xnew an array and name the inputs
+  Xnew <- array(Xnew, c(1,5)) # c(1,5) are the dimensions of the array
+  colnames(Xnew) <- paste0("lag",1:5) # I have already reversed the order
+  # Convert to data.frame
+  Xnew <- as.data.frame(Xnew)
+  # Forecast
+  frc1[i] <- predict(fit2,Xnew)
+}
+frc1
+```
+
+And we plot the result. 
+
+```{r}
+frc1 <- ts(frc1,frequency=frequency(y.tst),start=start(y.tst))
+ts.plot(y.trn,y.tst,frc1,col=c("black","black","red"))
+```
+
+# Lasso regression
+
+To develop lasso models we need to use the package **glmnet**. 
+The following command will check if it is installed, install it if needed, and load it. 
+```{r}
+if (!require("glmnet")){install.packages("glmnet")}; library(glmnet)
+```
+
+The command we are interested in is `cv.glmnet()`. This fits a lasso and cross-validates an appropriate value for lambda. We will repeat the OLS regression model (`fit2`) with lasso.
+
+For lasso the inputs must be as an array without NA values
+```{r}
+# I remove the first 5 rows by -(1:5) that contain NAs
+# For the explanatories I remove the first column
+xx <- as.matrix(X[-(1:5),-1])
+# For the target I retain only the first column
+yy <- as.matrix(X[-(1:5),1])
+```
+
+Estimate the model
+```{r}
+lasso <- cv.glmnet(x=xx,y=yy)
+```
+
+To see the coefficients and the variables that stayed in the model we can use the function `coef()`
+```{r}
+coef(lasso)
+```
+
+Lasso suggests that lag2 is excluded, while the others are retained. 
+
+We can also look at the cross-validated error, which helps identify the appropriate lambda.
+
+```{r}
+plot(lasso)
+```
+
+The vertical axis shows the cross-validated error. The horizontal axis has different values of lambda. Note that its scale is in logarithms. The numbers at the top show how many variables are included for any value of lambda. As the cross-validated error is calculate using k-folds (the value of k can be controlled in `cv.glmnet()` using the argument `nfold` that by default is equal to 10), for each value of lambda, we have a distribution of MSE. The red dots in the plot are the means, while the grey whiskers show the spread. In choosing lambda we have two options, either choose the one with the minimum error, or the one that is one-standard deviation of the cross-validated error away from the minimum errors. These two are denoted by the vertical dotted lines. Empirical evidence suggests that the second option works best and is what is selected by default. 
+
+From this point on, we build forecasts in the same way as with normal regression. We can use `predict()` to get forecasts as usual. The only difference is that we do not need to make the inputs as a data.frame. 
+
+```{r}
+frc2 <- array(NA,c(8,1))
+for (i in 1:8){
+  # Create inputs - note for lasso we do not transform these into data.frame
+  Xnew <- c(tail(y.trn,5),frc2)
+  Xnew <- (Xnew[i:(4+i)])[5:1]
+  Xnew <- array(Xnew, c(1,5)) 
+  colnames(Xnew) <- paste0("lag",1:5)
+  # Forecast
+  frc2[i] <- predict(lasso,Xnew)
+}
+```
+
+Plot the result
+
+```{r}
+# Transform to time series
+frc2 <- ts(frc2,frequency=frequency(y.tst),start=start(y.tst))
+# Plot together with fit2
+ts.plot(y.trn,y.tst,frc1,frc2,col=c("black","black","red","blue"))
+legend("bottomright",c("OLS","Lasso"),col=c("red","blue"),lty=1)
+```
+
+Finally, we can use the same function to build a *ridge* regression, or an *elastic net*. To do this we need to use the argument `alpha` in the `cv.glmnet()` function. With `alpha=1` we get lasso. With `alpha=0` we get ridge. Any other value for `alpha` between zero and one defines a mixing parameter for the two lambdas of elastic nets. 
+```{r}
+ridge <- cv.glmnet(x=xx,y=yy,alpha=0)
+coef(ridge)
+```
+We can compare these with the result from lasso:
+```{r}
+cc <- as.matrix(cbind(coef(lasso),coef(ridge)))
+colnames(cc) <- c("lasso","ridge")
+round(cc,3)
+```
+
+# Exercises on lasso regression
+
+1. Evaluate the performance of the ols, lasso, and ridge forecasts. Which performs best here? How do they compare with an exponential smoothing benchmark?
+
+**Happy forecasting!**

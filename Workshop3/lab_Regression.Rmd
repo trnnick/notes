@@ -1,0 +1,1004 @@
+---
+title: 'Regression modelling in R'
+author: "Nikolaos Kourentzes (<nikolaos@kourentes.com>)"
+output:
+  pdf_document: 
+    toc: true
+    number_sections: true
+    toc_depth: 2
+    fig_width: 6
+    fig_height: 4.5
+    fig_caption: false
+  word_document: default
+  html_document: default
+geometry: margin=0.75in
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Load dataset
+First, we will load some data to get familiar with basic regression in R. 
+
+```{r}
+x <- read.csv("./Lab3data1.csv")
+```
+
+The principal command for this workshop is the function `lm()` which fits a regression line. I am not printing the output, but feel free to inspect the variables by simply typing their names or using the function `print()`. **Tip: you can see the help file for any function by typing ?function, for example `?print`**.
+
+Regression models can be built quite easily if we store our data as *data.frame*. This is another way to store data in computer memory. It is very similar to an array that can have multiple columns, however, with a data.frame each column can be named and have different properties. For example, one column could contain numerical values, while another one could contain logical ones (i.e. TRUE or FALSE). We can do this with the function `as.data.frame()`
+```{r}
+x <- as.data.frame(x)
+```
+
+We can check what is the nature of each variable in the memory using the function `class()`. For example:
+
+```{r}
+class(x)
+```
+
+we have 5 variables: `r colnames(x)`.
+
+# Data exploration
+First, we perform some initial data exploration. We start by looking at the correlation between the variables. To do that we use the function `cor()`.
+```{r}
+cor(x)
+```
+We get the correlations between all variables because the data are stored in a data.frame. If we would like to get the correlations between two variables, assuming they are of comparable length, we could have used:
+```{r}
+a <- x[,3] # Store third column of x as variable a
+b <- x[,4] # Store fourth column of x as variable b
+cor(a,b)   # correlation between the 3rd and 4th column
+```
+By default `cor()` gives us the Pearson correlation coefficient. We can get the non-parametric equivalents with the same function. Inspect the additional inputs by looking at the help documentation: `?cor`. For example, we could use `cor(x,method="spearman")`.
+
+Correlations are not adequate and we need to visualise the data using scatter plots to ensure that we are modelling linear relationships. As long as the data are in a data.frame this is very easy to do:
+```{r}
+plot(x)
+```
+
+Alternatively, we can "manually" produce a scatter plot between any two variables:
+```{r}
+plot(a,b)
+```
+
+Given that we model time series data, it may be helpful to plot the time series. We still rely on the `plot()` function. In the previous workshop when we used plot, because the data were already in `ts` class, R automatically recognised the variables as time series and plotted them accordingly. Let us get some more understanding of the `plot()` function. 
+```{r}
+plot(a,type="p") # This plots points
+plot(a,type="l") # This plots lines
+plot(a,type="o") # This plots points, connected with lines
+```
+
+There are a lot of arguments we can use to alter the appearance of plots. For example, we can change the markers by using the argument `pch` which takes values from 0 to 25. You have already seen in the previous lab the `col` argument to control the colour used in plotting.
+```{r}
+plot(a,pch=19,col="blue")
+```
+
+# Building a regression model
+Now we build a regression using the `lm()` function. In this function, there are two crucial arguments: (i) the regression equation, and (ii) the dataset. For this task we want to regress *sales* on *price*, so we will write the equation `sales ~ price`. This is almost identical to how we would write it on a piece of paper. However, note that the intercept and the coefficients are not needed and that "=" is replaced by "~". For more details, you can access the help of `lm()` with: `?lm`.
+
+```{r}
+# Regression sales on price
+fit1 <- lm(sales ~ price, data=x)
+fit1
+```
+
+`fit1` is a variable name I chose. We could use any name we want. The basic output provides only the coefficients and the formula. We can get additional output using the function `summary()`.
+
+```{r}
+summary(fit1)
+```
+
+Now we get the coefficients, the standard error of the coefficients, the t-statistics, and the corresponding p-values. We also get model statistics, such as the coefficient of determination ($R^{2}$) and its adjusted form. 
+
+It is often useful to store the result, so we can reuse it.
+
+```{r}
+sum1 <- summary(fit1)
+```
+
+The output of `summary()` is a list. As in the previous workshop, you can get all the variables contained within using the function `names()`
+
+```{r}
+names(sum1)
+```
+
+For future reference: within a list you can save any type of variables. These could be vectors, arrays, lists, data.frames, etc. For example, we extract the p-values and test them at 5% significance.
+
+```{r}
+# Get p-values and evaluate with a = 0.05
+sum1$coefficients
+pval <- sum1$coefficients[,4]
+pval <= 0.05
+```
+
+Observe how I compared the p-values with 0.05. I used the symbol `<` for less than and `=` for equal. The output is a logical variable, i.e. a result that can be either `TRUE` or `FALSE`. If I wanted to test for greater than a value, I would use the symbol `>`. If you want greater (less) or equal, the `=` symbol must follow the `>` (or `<`). 
+
+As you can see, in our example, everything is significant. 
+
+We also extract the $R^{2}$ of model `fit1`.
+
+```{r}
+fit1r2 <- sum1$r.squared
+fit1r2
+```
+
+We argued in the lecture that the coefficient of determination is not a great statistic for building forecasting models. Instead, we would like to have some information criterion, such as the Akaike Information Criterion (AIC). Remember that for the AIC, similarly to accuracy metrics, the smaller the better. 
+
+To calculate AIC we use the function `AIC()`. 
+
+```{r}
+fit1aic <- AIC(fit1)
+fit1aic
+```
+
+> Now quickly repeat for the sales on revenue regression. Try to do it on your own, using the example above. Save the model in variable `fit2`, its summary in `sum2`, its $R^{2}$ in `fit2r2`, and its AIC in `fit2aic`. 
+  
+\  
+
+\  
+
+\  
+
+\  
+
+\  
+
+\  
+
+**Did you try? :)**
+
+The solution is in the next page.
+
+\pagebreak
+
+```{r}
+# Regress sales on revenue
+fit2 <- lm(sales~revenue,data=x) # Fit the regression model
+sum2 <- summary(fit2) # Get summary statistics
+
+# Get R^2 and AIC
+fit2r2 <- sum2$r.squared
+fit2aic <- AIC(fit2)
+
+# Test coefficients
+sum2$coefficients[,4] <= 0.05
+```
+
+Observe that the revenue is insignificant at 5%. Let us see the details of the coefficients:
+
+```{r}
+sum2$coefficients
+```
+
+Revenue has a p-value of 0.66, so there is some evidence that this variable may need to be removed from the model. 
+
+Let us compare the models using $R^{2}$ and AIC. I merge both into a single vector, using the function `c()`. The first value will be the $R^{2}$ of the first model (`fit1`), and the second of `fit2`.
+
+```{r}
+r2 <- c(fit1r2,fit2r2)
+r2
+```
+
+The first model explains the data more, with a substantially higher coefficient of determination. (Remember, coefficient of determination is not a great statistic. We are doing this here, so that you know how to get the values, in case you need them for other tasks, rather than rely on them for building forecasting models.)
+
+We often do not need to get so many decimal points. A handy function is `round()`, which rounds output to the desired number of decimals. For example:
+
+```{r}
+round(r2,2)
+```
+
+The output is still not very nice, as we just get two numbers. We can name these. These are saved in a vector (the output of `c()`), so to name each element we use the function `names()`
+
+```{r}
+names(r2) <- c("Price","Revenue")
+round(r2,3)
+```
+
+We repeat the same for AIC.
+
+```{r}
+aic <- c(fit1aic,fit2aic)
+names(aic) <- names(r2)
+round(aic,3)
+```
+
+Observe that instead of retyping the names, I copied them from variable `r2`. The first model has a lower AIC so it is preferable. As it happens, $R^{2}$ agreed. 
+
+> **Question**: Why the sales~price has more explanatory power to sales~revenue? Remember a model needs to be reasonable!
+
+# Forecast using regression models
+We will use a different dataset
+
+```{r}
+x2 <- read.csv("./Lab3data2.csv")
+x2 <- as.data.frame(x2)
+x2
+```
+
+This contains information for sales for 8 weeks, given some price and number of advertisement spots. We build the regression of sales on spots. Try it on your own. The solution follows.
+
+```{r}
+# Construct the regression and get its statistics
+fit3 <- lm(sales~spots,data=x2)
+sum3 <- summary(fit3)
+sum3
+```
+
+> **Question**: What did I do wrong here? 
+
+I should have explored the data first, and crucially make sure that anything I am modelling is linear! For now, let us assume that things are fine and progress to build a forecast using this model. Please don't do this assumption if you ever have to do this in practice! :)
+
+To generate forecasts we use the function `predict()`. There are three arguments that we are interested in:
+
+1. The model; 
+2. The new data to use to construct the forecast, i.e. the explanatory variables;
+3. An optional argument that is used to ask for prediction intervals. 
+
+Any inputs must be as a data.frame. Let's create one with the new spots value.
+
+```{r}
+xnew <- data.frame("spots"=20)
+xnew
+```
+
+Note that I named the column that includes the new data point as `spots`, which is the same as the variable is named in our model. This is important, to make sure that R can identify what data to use. 
+
+We produce the forecast
+
+```{r}
+frc <- predict(fit3,xnew,interval="prediction")  
+frc
+```
+
+We get three results: `fit` is the forecast, and the other two values are the lower and upper prediction intervals. If I want to access a specific number, then I need to ask for the specific value I am interested in, using:
+
+```{r}
+frc[1]
+```
+
+This will give us the forecast (named fit in the previous output).
+
+# Multiple regression
+To fit a multiple regression we simply expand the formula to include more variables.
+
+```{r}
+fit4 <- lm(sales~spots+price,data=x2)
+sum4 <- summary(fit4)
+sum4
+```
+
+We can see from the output that all coefficients are significant. Let us compare the models (`fit3` and `fit4`). $R^{2}$ is useless for comparing models with a different number of variables. We could use its adjusted version (we can get that by typing `sum3$adj.r.squared` for `fit3` - we have saved its summary statistics in variable `sum3`), but this has its limitations as well, so we will directly use AIC. 
+
+```{r}
+c(AIC(fit3),AIC(fit4))
+```
+
+As we can see the AIC of `fit4` (the second number) is better, so `fit4` should be used. To produce a forecast we need the data.frame to contain values for both variables. 
+
+```{r}
+xnew <- data.frame("spots"=20, "price"=40)
+predict(fit4,xnew) # I do not ask for prediction intervals, so I will get only the forecast.
+```
+
+Note that I can use this expanded `xnew` variable with model `fit3` without any problems. R is smart enough to use only the variables that are relevant (i.e., named correctly!). 
+
+```{r}
+predict(fit3,xnew)
+```
+
+# Variable selection
+Let us revisit the first dataset.
+
+```{r}
+x
+# Correlation and scatterplots
+cor(x)
+plot(x)
+```
+
+To build a full model of sales we can write: `sales ~ .`
+The symbol "." means all remaining variables in the dataset.
+
+```{r}
+fit5 <- lm(sales~.,data=x)
+summary(fit5)
+```
+
+Observe which variables are significant. Let's see what the stepwise routines will give us. We can build the stepise using the function `step()`. Check its help: `?step`.
+
+To do this we first need to define the smallest model to consider. 
+
+```{r}
+fitmin <- lm(sales~1,data=x) # This means use only an intercept.
+```
+
+We use the argument `direction` to control how the stepwise evolves and the argument `scope` to define the full model. For (both directions) stepwise we use:
+
+```{r}
+fit6 <- step(fitmin,direction="both",scope=formula(sales~week+price+revenue+advertising))
+```
+
+The output provides 3 different models, as more variables are included in each step. The variable inclusion/exclusion criteria is the AIC. The final model is
+
+```{r}
+summary(fit6)
+```
+
+To produce forward regression we simply change the `direction` argument. 
+
+```{r}
+fit7 <- step(fitmin,direction="forward",scope=formula(sales~week+price+revenue+advertising))
+summary(fit7)
+```
+
+But remember, forward regression is not considered a great idea. In brief, the reason is that it does not search between alternative models effectively.
+
+The backward result is somewhat different in the syntax. Now we start from the full model (`fit5`) and ask it to eliminate variables, according to the progression of AIC. 
+
+```{r}
+fit8 <- step(fit5,direction="backward",scope=formula(sales~week+price+revenue+advertising))
+```
+
+The final backward model is:
+
+```{r}
+summary(fit8)
+```
+
+Observe that in setting the `scope` argument we used the function `formula()`. This is to tell R that this is not a simple text and that it should look for variables named like that. We could have avoided writing this manually by using:
+
+```{r}
+formula(fit5)
+```
+
+So in a single like we could have (here I encompass several functions in a single line, so we have two `lm()`, the `formula()` and `step()`) 
+
+```{r}
+step(lm(sales~1,data=x),direction="both",scope=formula(lm(sales~.,data=x)))
+```
+
+Let us compare the solutions from earlier on (`fit1` and `fit2`) with the full model `fit5` and a stepwise result `fit6`. We use AIC for that purpose.
+
+```{r}
+aic <- c(AIC(fit1),AIC(fit2),AIC(fit5),AIC(fit6))
+names(aic) <- c(formula(fit1),formula(fit2),"Full model","Stepwise")
+round(aic,4)
+```
+
+As you can see, the stepwise provided the best solution. Note that the stepwise is done on AIC, so we would expect it to perform well on that criterion! 
+
+We find `fit6` as being the best model so far. Is the model valid?
+To diagnose the model we can get useful plots using the `plot()` function on the model fit. R looks at the class of the `fit6` variable and forces the `plot()` function to behave accordingly. 
+
+```{r}
+plot(fit6)
+```
+
+Some of the statistics you may be familiar with from your prior regression experience. To get all 4 plots in one screen we ask R to split the plot in a 2 by 2 matrix:
+
+```{r}
+par(mfrow=c(2,2)) # Split into 2 by 2
+plot(fit6) # Plot
+par(mfrow=c(1,1)) # Revert to a single plot. Otherwise it will keep on plotting on a 2 by 2 matrix. 
+```
+
+The `par(mfrow=c(*,*))` splits the plotting screen into that many rows x columns. 
+
+What are we looking for in these plots? We would like the residuals vs. fitted to look random. We would like the points on the Q-Q plot to look as much on the diagonal line as possible. Values that are too far away hint at the presence of outliers. As for the two plots in the bottom row, they are also diagnostics for outliers. Before we happily explain away the outliers with binary dummy variables, remember that outliers contain information: what about that strange customer (outlier)? Is that an emerging new trend, or just a strange customer? Sometimes in observing how (and why) outliers differ from the rest of the data, we may understand our problem better. 
+
+Also, remember that with small samples these diagnostics will never look very clean. The more data we have, the better we will be able to distinguish outliers vs. randomness and potential patterns in the residuals. 
+
+Alternatively, we can extract the residuals and produce any plot we want manually.
+
+```{r}
+resid <- fit6$residuals
+fitted <- fit6$fitted.values
+```
+
+And produce the plots
+
+```{r}
+par(mfrow=c(2,2))
+plot(fitted,resid)        # Scatter plot fitted vs. residuals
+plot(x$price,resid)       # Scatter plot price vs. residuals
+plot(x$advertising,resid) # Scatter advertising vs. residuals
+hist(resid)               # Historgram of residuals
+par(mfrow=c(1,1))
+```
+
+Again, we want all scatter plots to exhibit no patterns. If there are patterns there, they may indicate the presence of unused information (either because our model has omitted terms, or because of nonlinearities). As for the histogram, we would like this to look like a normal distribution. Here it does not, but keep in mind that we have too little data to expect it to look anything like a normal distribution. If anything, it does not have any outliers and looks fairly symmetric, so as good as it would get with only 8 data points. 
+
+With the limited sample size we have, there is not too much we can do with these plots. Statistical tests would not be much more helpful, as their results would be very uncertain with so little data. 
+
+> **Question**: How can we test against an exponential smoothing forecast? Remember that exponential smoothing needs the input data to be a time series using the function `ts()`. 
+
+A final note! If you want to build a model without a constant you would do it as (note the 0):
+
+```{r}
+fit9 <- lm(sales ~ 0 + ., data=x)
+summary(fit9)
+```
+
+As you can see this includes all the variables, but no intercept.
+
+# Exercises for basic regression building. 
+Using the second dataset `x2`
+
+1. Build stepwise, forward, and backward models;
+2. Compare all options, including the manual models we built. 
+
+# Advanced regression modelling
+We will learn how to build dynamic regression models (with lags) and special aspects of regression model building. At this point, for convenience, we will erase all variables in memory (in R nomenclature we call this environment), using the function `rm()`.
+
+```{r}
+rm(list=ls()) # The argument within rm() lists all names of variables. 
+```
+
+First, we will see how to use lags in regression models and how to build forecasts using these. We load some relevant data and use a conveniently named variable.
+
+```{r}
+x <- ts(read.csv("./Lab3data3.csv"),frequency=4,start=c(2003,1))
+# Print the first 10 rows
+x[1:10,]
+```
+
+The dataset contains the quarterly Walmart sales together with the US GDP data. Let us visually explore the target time series.
+
+```{r}
+plot(x[,1],ylab="Walmart sales")
+```
+
+For this task, we will retain the last 2 years as a test set and use the rest to build the models.
+
+```{r}
+y.trn <- window(x[,1],end=c(2013,4))
+y.tst <- window(x[,1],start=c(2014,1))
+```
+
+Let us explore the potential lag-structure of the time series. We will do that by consulting the PACF (Partial AutoCorrelation Function) and to do this we use the function `pacf()`.
+
+```{r}
+pacf(y.trn)
+```
+
+The plot tells us that lag 1, lag 2, lag 4 and lag 5 are significant. This may be helpful inputs for a regression model. 
+We will construct all lagged inputs 1-5 and test their usefulness. The significant lag 4 suggests there might be seasonality, which we already saw in the time series plot. A seasonal plot would confirm this further. 
+
+If we want to see the ACF (AutoCorrelation Function), we can use the function `acf()`. However, remember that in building standard regression models it is the PACF that carries the useful information, and not the ACF.
+
+```{r}
+acf(y.trn)
+```
+
+# Construct lags
+
+First, let us see how many observations we have.
+```{r}
+n <- length(y.trn)
+n
+```
+
+We will construct an array X to build the lags (and the target variable). We will create an array with n rows and 6 columns, one for the target and five for the lags. By default, the array will be populated with NA (Non-Arithmetic) values.
+
+```{r}
+X <- array(NA,c(n,6))
+```
+
+We will construct the lags with a *loop*, observe the syntax of the loop, this is quite useful.
+
+```{r}
+# We start a loop, which will iterate for all values of i = 1, 2, 3, 4, 5, 6
+for (i in 1:6){     
+  # We tell it to place the data in the i th column, from observation i till the end.
+  # We place the data from the beginning towards as much as we can fit to the array (the n-i+1 bit).
+  X[i:n,i] <- y.trn[1:(n-i+1)] 
+}
+# Name the columns
+# paste0("lag",1:5) creates names lag1, lag2, lag3, lag4, lag5
+colnames(X) <- c("y",paste0("lag",1:5))  
+# Let us see how the resulting array looks like (the first 10 observations)
+X[1:10,]
+```
+
+Notice that observations are lagged as needed, and therefore at the beginning of the array we miss some data (they remained NA) - these observations will be ignored in a regression. Keep in mind that each observation, in a regression context, must be a complete row of data. 
+
+Let us look at the last 10 rows of X.
+
+```{r}
+X[(n-9):n,] # Observe the use of parenthesis when I calculate locations in an array
+```
+
+Note that is the end of the series, the lagged variables (as expected) do not contain all values of the target. By calculating lag1 I lose one value (128.8), lag2 two values (114.9 and 128.8), and so on. 
+
+I do not need to check for correlations, as this is guaranteed for lags 1, 2, 4, and 5 from the PACF. However, since I am building a *linear* regression, I should consult scatter plots to make sure that the connection is linear. To make our lives easy, first, we transform `X` into a data.frame. This is done using the function `as.data.frame()`. 
+
+```{r}
+X <- as.data.frame(X)
+```
+
+Now that `X` is a data.frame I can use `plot()` and `lm()` in the same way as before. 
+
+First, look at the scatter plots:
+
+```{r}
+plot(X)
+```
+
+Everything is fairly linear. The seasonality that is present in the time series complicates the scatter plots, as the remaining structure can interact linearly with `y`, but the seasonality non-linearly. To illustrate the point, let us plot the `AirPassengers` time series we used before with exponential smoothing. 
+
+```{r}
+plot(AirPassengers)
+```
+
+This is a classic case of multiplicative seasonality. Observe that the seasonality becomes wider, as the time series slopes upwards. Therefore, this is a particularly interesting case as it is linear on trend, but non-linear on seasonality (multiplicative). Therefore, exponential smoothing models work on such time series seamlessly, while for regression it is more complicated, as it can only do linear stuff. One way to help regression is to model the variables in logarithms. Logarithms have the property of transforming multiplicative interactions to additive:
+
+```{r}
+plot(log(AirPassengers))
+```
+
+The seasonality is now additive, and therefore linear. Observe that the width of the seasonality remains fixed, irrespectively of the time series slopping upwards. However, we have distorted the long-term trend. Before it seemed more like a straight line, while now it appears somewhat damped. That complicates modelling in different ways. Remember that trends can be quite nasty on their own, as they can give us the impression of false-correlations. Any two trended time series will exhibit some correlation. In that case, it is good practice to model the differences, which can be done using the function `diff()`. 
+
+```{r}
+# Logs are calculated first, and then differences
+plot(diff(log(AirPassengers)))
+```
+
+We will return to the discussion of differences later on. Now let us focus again on modelling the Walmart time series. 
+We use `lm()` to build regression models. We will consider two alternatives:
+
+- The complete model (all lags)
+- The stepwise selection 
+
+```{r}
+# The complete model
+fit1 <- lm(y~.,data=X)  
+summary(fit1)
+```
+
+```{r}
+# The stepwise model
+fit2 <- step(fit1)
+summary(fit2)
+```
+
+This suggests removing lags 2 and 3. We already anticipated lag 2 to be removed, as it was insignificant in the PACF before. AIC suggests that lag 3 was redundant as well (note that `step()` is using AIC as the default selection criterion).
+
+Look at the coefficients and keep in mind that the series is trending upwards. The net effect from the autoregressive coefficients is less than 1 (sum of coefficients for lags 1, 4, and 5). This means that you always *copy* a bit less, so the forecast will tend to go back to the intercept, and not to higher numbers. Therefore, this model will not be able to predict a trending time series. For now, we ignore this issue. 
+
+Let us compare the two models and select the most plausible one
+
+```{r}
+c(AIC(fit1),AIC(fit2))
+```
+
+Model `fit2` has lower AIC, so it is preferable. 
+Let us explore visually how well the model fits to the data.
+
+```{r}
+# In-sample fit:
+plot(X$y,type="l")
+frc <- predict(fit2,X)
+lines(frc,col="red")
+```
+
+This looks pretty good. However, we are doing forecasting, so a good in-sample fit is not the complete picture. Let us produce some forecasts.
+
+We will do it iteratively. The inputs are lag1-5. so we will make a vector for the inputs.
+
+```{r}
+# I will take the last 5 values (remember: up to lag 5)
+Xnew <- array(tail(y.trn,5),c(1,5))
+colnames(Xnew) <- paste0("lag",5:1) # Note that I invert the order.
+# I do that as the last value is lag1 and 5 values ago is lag 5. 
+# R is smart enough to pick the right element, just by looking at the names. 
+Xnew <- as.data.frame(Xnew)
+Xnew
+```
+
+And the forecast is:
+```{r}
+predict(fit2,Xnew)
+```
+
+This is the t+1 forecast. Let us get multiple step-ahead forecasts for the complete test set. I don't want to do that manually, so I will make use of a for-loop. Also, as I will eventually move away from the last observed data point, I will need to switch to using forecasted values as inputs.
+
+Let me first explain the logic of how this will work. First, we create an array to save the forecasts
+
+```{r}
+frc1 <- array(NA,c(8,1)) # 8 because the test set is 8 periods
+```
+
+Now we want to create the inputs. Initially, these are the last 5 observations, just like before. Now I will invert the order of the observation directly:
+
+```{r}
+Xnew <- tail(y.trn,5)
+Xnew <- Xnew[5:1]
+Xnew
+```
+
+Let us remember what our model form is:
+
+```{r}
+formula(fit2)
+```
+
+To construct the t+1 forecast I have everything in Xnew. However, to produce the t+2 forecast, I will need lag1, which I will not have. Let me exemplify with dates. Suppose period t is November and that period is the last data point we have observed: 
+
+- the t+1 forecast is for December. In December lag1 is the previous month, so that would be November, which I have. 
+- the t+2 forecast is for January. In January the lag1 refers to December. For December I do not have an actual observation, but I can instead use the t+1 forecast that refers to December. This makes it possible to produce an `iterative` forecast. Note that the errors of t+1 forecast will contaminate the t+2 forecast and so on. Eventually, for long-term predictions these errors accumulate, making long-term forecasts fairly inaccurate.
+
+To do this logic in code, I will do the following trick. I will append to Xnew the forecasted values:
+
+```{r}
+Xnew <- c(Xnew, frc1)
+Xnew
+```
+
+These forecasts are for now NA (Non-Arithmetic), but as I generate them these will be replaced by the appropriate values. All I need then is to slide across that vector, to always take the relevant last 5 observations. For example, to produce:
+
+- the t+1 I need the first 5 values, `Xnew[1:5]`
+- the t+2 I need values 2-6, dropping the oldest first value, `Xnew[2:6]`, where `Xnew[6]` will be the first forecast, and so on. 
+
+I do this below with a for-loop.
+
+```{r}
+frc1 <- array(NA,c(8,1))
+
+for (i in 1:8){
+  # For the Xnew we use the last five observations as before
+  Xnew <- tail(y.trn,5)
+  # Add to that the forecasted values
+  Xnew <- c(Xnew,frc1)
+  # Take the relevant 5 values. The index i helps us to get the right ones
+  Xnew <- Xnew[i:(4+i)]
+  # If i = 1 then this becomes Xnew[1:5].
+  # If i = 2 then this becomes Xnew[2:6] - just as the example above.
+  # Reverse the order
+  Xnew <- Xnew[5:1]
+  # Make Xnew an array and name the inputs
+  Xnew <- array(Xnew, c(1,5)) # c(1,5) are the dimensions of the array
+  colnames(Xnew) <- paste0("lag",1:5) # I have already reversed the order
+  # Convert to data.frame
+  Xnew <- as.data.frame(Xnew)
+  # Forecast
+  frc1[i] <- predict(fit2,Xnew)
+}
+frc1
+```
+
+Let us plot the result. To do this conveniently I need to tell `frc1` to copy the time series properties from my data. As it refers to the same periods as the test set `y.tst`, I will copy from that one. 
+
+```{r}
+# Transform to time series, by copying the information from y.tst
+frc1 <- ts(frc1,frequency=frequency(y.tst),start=start(y.tst))
+```
+
+And produce a plot with the actual data and the forecast
+
+```{r}
+ts.plot(y.trn,y.tst,frc1,col=c("black","black","red"))
+```
+
+That looks reasonable. The seasonality is modelled using autoregressive lags. Below we consider the case of dummy variables.
+
+# Seasonality with dummy variables
+
+We will use dummies to encode seasonality. To do this we will create a *factor* variable. This will code seasonality from 1 to 4, and R internally will translate it into dummies. We tell R that something is a factor using the function `factor()`
+
+```{r}
+D <- rep(1:4,11) # Replicate 1:4 11 times
+D <- factor(D)
+D
+```
+
+Observe that when I print the result, now it adds another line "Levels: 1 2 3 4" that shows what are the categories. These could be numbers or text. So instead, I could have used:
+
+```{r}
+factor(rep(c("Q1","Q2","Q3","Q4"),11))
+```
+
+We bind the dummies with the lags in `X` we constructed before.
+
+```{r}
+X2 <- cbind(X,D)
+colnames(X2) <- c(colnames(X2)[1:6],"D")
+X2
+```
+
+Build the regression model as usual:
+
+```{r}
+fit3 <- lm(y~.,data=X2)
+summary(fit3)
+```
+
+Observe that D was broken into 3 dummy variables automatically. Note that lag4 is no longer significant, as seasonality is captured by the dummies.
+We use stepwise to refine the model. Remember: stepwise is not a perfect answer, but it will give us a good starting point to manually enhance the model further. 
+
+Normally we would write `step(fit3)`. This will not work here, due to the NA values in X2. R does not like this when factors are involved. So we need to manually take care of that.
+
+```{r}
+# Find NA in X2
+idx <- is.na(X2)
+# The result is logical TRUE/FALSE values
+idx[1:10,]
+```
+
+When you make calculations with logicals then TRUE = 1 and FALSE = 0. If we sum across columns, any value greater than zero will have contained at least one TRUE, i.e. at least one NA.
+
+```{r}
+idx <- rowSums(idx)
+idx
+```
+
+```{r}
+idx <- idx == 0 
+idx
+```
+
+Now `idx` will be TRUE if there are no NA in that row. Now we refit the regression, manually removing the redundant data points. These were excluded in `fit3` automatically. 
+
+```{r}
+fit_temp <- lm(y~.,data=X2[idx,])
+# fit_temp is the same as fit3, without the first NA part
+fit4 <- step(fit_temp)
+summary(fit4)
+```
+
+The resulting model has kept only lag1 and the dummies. Note that stepwise tested the dummies together as a group. This is why we used a single factor, instead of adding manually 3 binary dummy variables. 
+
+Let us compare with the stochastic seasonality model, from before:
+
+```{r}
+c(AIC(fit2),AIC(fit4))
+```
+
+The new model has lower (better) AIC, let us produce its in-sample fit
+
+```{r}
+frc <- predict(fit4,X2)
+ts.plot(y.trn,frc,col=c("black","red"))
+```
+
+Looks fine, but we already know that in-sample fit can be deceiving. Let us produce its forecast.
+We will adjust the code slightly so that we get the dummies right. 
+
+```{r}
+# Initialise frc2 to store the forecasts
+frc2 <- array(NA,c(8,1))
+for (i in 1:8){
+  # Create lags - same as before
+  Xnew <- tail(y.trn,5)
+  Xnew <- c(Xnew,frc2)
+  Xnew <- Xnew[i:(4+i)]
+  Xnew <- Xnew[5:1]
+  Xnew <- array(Xnew, c(1,5)) 
+  colnames(Xnew) <- paste0("lag",1:5)
+  Xnew <- as.data.frame(Xnew)
+  # Xnew contains all the lags
+  # Create the value of the dummy
+  D <- as.factor(rep(1:4,2)[i])
+  # The logic is that I create the dummy for all 8
+  # periods and I pick the i th value. I start the 
+  # dummy from 1 because I know that the first period
+  # is quarter 1. I should ammend this otherwise. 
+  Xnew <- cbind(Xnew,D)
+  # Forecast
+  frc2[i] <- predict(fit4,Xnew)
+}
+```
+
+Let us compare the values of the previous forecast and the new one
+
+```{r}
+cbind(frc1, frc2)
+```
+
+Numerically they look somewhat different. We plot the new forecast
+
+```{r}
+# Transform to time series
+frc2 <- ts(frc2,frequency=frequency(y.tst),start=start(y.tst))
+# Plot
+ts.plot(y.trn,y.tst,frc1,frc2,col=c("black","black","red","blue"))
+legend("bottomright",c("Autoregressive","Dummies"),col=c("red","blue"),lty=1)
+```
+
+The new forecast seems to be somewhat biased compared to the old one. 
+Trend could also be an issue, so we deal with that one next.
+
+# Modelling in differences (handling trends)
+We first store the inputs (without the dummy) in a new variable
+
+```{r}
+X3 <- X
+```
+
+To calculate differences we can use the function `diff()` for each column.
+
+```{r}
+# The function ncol() counts how many columns
+for (i in 1:ncol(X3)){
+  X3[,i] <- c(NA,diff(X3[,i]))
+}
+print(X3)
+```
+
+We build the full regression
+
+```{r}
+summary(lm(y~.,X3))
+```
+
+We can see that there is little evidence for autoregressive lags to help now, apart from the seasonal one. We let stepwise deal with the selection of variables.
+
+```{r}
+fit5 <- step(lm(y~.,X3))
+summary(fit5)
+```
+
+Stepwise keeps quite a few lags in the model. 
+
+**Important**: I cannot use AIC to compare `fit5` with the previous models. The reason is that this model is calculated on the differenced data. AIC is only applicable when the data stay the same. In fact, we also need the data to have the same observations, so if we were to use more lags, and therefore trim some more observations from our data, we could no longer use AIC. 
+
+We produce the forecasts
+
+```{r}
+frc3 <- array(NA,c(8,1))
+for (i in 1:8){
+  # Calculate the differences of the in-sample data
+  y.diff <- diff(y.trn)
+  # Create lags - same as before
+  Xnew <- tail(y.diff,5)
+  Xnew <- c(Xnew,frc3)
+  Xnew <- Xnew[i:(4+i)]
+  Xnew <- Xnew[5:1]
+  Xnew <- array(Xnew, c(1,5)) 
+  colnames(Xnew) <- paste0("lag",1:5)
+  Xnew <- as.data.frame(Xnew)
+  # Forecast
+  frc3[i] <- predict(fit5,Xnew)
+}
+```
+
+Plot the result
+
+```{r}
+# Transform to time series
+frc3 <- ts(frc3,frequency=frequency(y.tst),start=start(y.tst))
+# Plot
+ts.plot(diff(y.trn),frc3,col=c("black","red"))
+```
+
+The data look very different, as they are in differences. The forecast looks reasonable, but to compare it with the others we need to reverse the differences. To do that we need to add them up from the last undifferenced point (that is the forecast origin).
+
+```{r}
+frc3ud <- cumsum(c(tail(y.trn,1),frc3))
+# The function cumsum() is the cumulative sum.
+```
+
+We take the forecast origin and we add the first forecast in differences (that is how much it should change by). On the resulting value (forecast t+1), we add the next forecasted change to get the t+2 forecast. That is a cumulative sum.
+We do that to get all t+1 to t+8 forecasts.
+
+We do not need the first value (the forecast origin) that was added to help us with the undifferencing:
+
+```{r}
+frc3ud <- frc3ud[-1]
+```
+
+Plot against the previous forecasts:
+
+```{r}
+frc3ud <- ts(frc3ud,frequency=frequency(y.tst),start=start(y.tst))
+ts.plot(y.trn,y.tst,frc1,frc2,frc3ud,col=c("black","black","red","blue","magenta"))
+legend("bottomright",c("Autoregressive","Dummies","Difference"),col=c("red","blue","magenta"),lty=1)
+```
+
+That did not seem to improve things! 
+We compare the three forecasts using out-of-sample metrics:
+
+```{r}
+# Create an array with the actuals replicated three times
+# to compare with the three forecasts in one go
+actual <- matrix(rep(y.tst,3),ncol=3)
+actual
+```
+
+and calculate the error
+
+```{r}
+error <- abs(actual - cbind(frc1,frc2,frc3ud))
+MAE <- colMeans(error)
+MAE
+```
+
+The first forecast (with the autoregressions) is the most accurate, as we have already seen visually. 
+
+However, maybe the change in trend is better captured by the changes in GDP. Let us explore.
+
+```{r}
+plot(as.vector(x[,2]),as.vector(x[,1]),ylab="Sales",xlab="GDP")
+abline(lm(x[,1]~x[,2]),col="red")
+# The function abline plots a function, here the regression fit
+```
+
+However, when time series are trended, the connection can be spurious.
+Let us do that in differences
+
+```{r}
+plot(as.vector(diff(x[,2])),as.vector(diff(x[,1])),xlab="Sales",ylab="GDP")
+abline(lm(diff(x[,1])~diff(x[,2])),col="red")
+```
+
+There may be some relevant information there
+
+```{r}
+# Get gdp in differences after the test set is removed
+gdp <- c(NA,diff(x[1:(length(x[,2])-8),2]))
+# Construct inputs for regression
+X4 <- cbind(X3,gdp)
+fit6 <- step(lm(y~.,X4[-(1:6),])) # Remove NA
+summary(fit6)
+```
+
+Create forecasts with this model
+
+```{r}
+frc4 <- array(NA,c(8,1))
+for (i in 1:8){
+  # -- Autoregressions are same as before --
+  # Calculate the differences of the in-sample data
+  y.diff <- diff(y.trn)
+  # Create lags - same as before
+  Xnew <- tail(y.diff,5)
+  Xnew <- c(Xnew,frc3)
+  Xnew <- Xnew[i:(4+i)]
+  Xnew <- Xnew[5:1]
+  # Add differenced gdp information
+  # We take the last 9 values, that is test set + 1
+  Xgdp <- tail(gdp,9)
+  # and calculate differences - this is why we needed the
+  # one extra value, which is now removed from the differencing
+  Xgdp <- diff(Xgdp)
+  # Use only the i th value
+  Xgdp <- Xgdp[i]
+  # Bind to Xnew
+  Xnew <- c(Xnew,Xgdp)
+  # Name things
+  Xnew <- array(Xnew, c(1,6)) 
+  colnames(Xnew) <- c(paste0("lag",1:5),"gdp")
+  Xnew <- as.data.frame(Xnew)
+  # Forecast
+  frc4[i] <- predict(fit6,Xnew)
+}
+```
+
+Reverse differencing
+
+```{r}
+frc4ud <- cumsum(frc4) + as.vector(tail(y.trn,1))
+```
+
+Plot everything together
+```{r}
+frc4ud <- ts(frc4ud,frequency=frequency(y.tst),start=start(y.tst))
+ts.plot(y.trn,y.tst,frc1,frc2,frc3ud,frc4ud,col=c("black","black","red","blue","magenta","brown"))
+legend("bottomright",c("Autoregressive","Dummies","Difference","GDP"),col=c("red","blue","magenta","brown"),lty=1)
+```
+
+GDP seems to help in tracking the trend better. Let us check the MAE
+
+```{r}
+c(MAE, mean(abs(y.tst-frc4ud)))
+```
+
+Indeed, the new forecast has the lowest MAE.
+
+# Exercises on advanced regression
+
+1. Develop a regression using lagged only values of GDP and forecast the next 8 quarters. Attempt the model in differences and on the original data.
+2. Develop an exponential smoothing benchmark. Which model is better? OLS or ETS.
+
+**Happy forecasting!**

@@ -1,0 +1,128 @@
+---
+title: 'Temporal hierarchies in R'
+author: "Nikolaos Kourentzes (<nikolaos@kourentes.com>)"
+output:
+  pdf_document: 
+    toc: true
+    number_sections: true
+    toc_depth: 2
+    fig_width: 6
+    fig_height: 4.5
+    fig_caption: false
+  word_document: default
+  html_document: default
+geometry: margin=0.75in
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Data and packages
+
+We will model temporal hierarchies in two ways. First, we will use a package that gives us a somewhat limited control in the generation of the hierarchical forecasts. Second, we will use step by step code to do the combination manually, as it is a fairly simple process and gives us full control in generating any base forecasts we may want. 
+
+The relevant package is *thief*. For manual implementation we will make use of some supporting packages, namely: *MAPA* (this is in fact the 1st version of temporal hierarchies), *tsutils*, and *abind*.
+
+Let us load the packages. 
+```{r, results = 'hide'}
+pckg <- c("thief","MAPA","tsutils","abind")
+for (i in 1:length(pckg)){
+  if(!(pckg[i] %in% rownames(installed.packages()))){
+    install.packages(pckg[i])
+  }
+  library(pckg[i],character.only = TRUE)
+}
+```
+
+We will use the usual `AirPassenger` time series.
+```{r}
+y <- AirPassengers
+```
+
+# Temporal hierarchies using the thief package
+Using the function `thief()` the whole process is automated:
+```{r}
+frc1 <- thief(y)
+plot(frc1)
+```
+By default it uses ETS as the base forecast, we can change that using the argument `usemodel`. For instance:
+```{r}
+frc2 <- thief(y,usemodel="arima")
+plot(frc2)
+```
+Similarly, we can control the approximation of the covariance of the forecast errors that contribute to the estimation of the combination weights for the matrix G. This can be done with the argument `comb`. Look at the documentation of the function for more details `?thief`.
+
+# Manual implementation of THieF
+First, we construct the summing matrix S, used to map the hierarchy and pick up from that the useful aggregation levels (we use only those that would not result in a fractional seasonality).
+```{r}
+S <- tsutils::Sthief(y)   # Get the S matrix
+ff <- frequency(y)        # Get sampling frequency of target series
+AL <- ff/(1:ff)           # Calculate frequencies of various aggregation levels
+AL <- AL[AL %% 1 == 0]    # And exclude those that would not be integer
+k <- length(AL)           # Find how many are left 
+```
+
+Next we create the temporally aggregated time series
+```{r}
+Y <- MAPA::tsaggr(y,AL)[[1]]
+```
+
+We set the target forecast horizon, and calculate the corresponding forecast horizons for all temporal aggregation levels
+```{r}
+hrz <- 16 # Target horizon
+hAggr <- (ceiling(hrz/ff)*ff)/AL
+hAggr
+```
+
+Now we produce all the base forecasts, i.e., the independent forecasts for each level of the temporal hierarchy. For this example I am using ETS, but any forecasting method could be used. Note that this does not need to be the same across the various levels of the tmeporal hierarchy.
+```{r}
+frc <- mse <- list()
+for (i in 1:k){
+  yTemp <- Y[[i]]
+  fit <- ets(yTemp)
+  mse[[i]] <- fit$mse
+  frcTemp <- forecast(fit,h=hAggr[i])$mean
+  # Re-structure forecasts
+  frc[[i]] <- matrix(frcTemp,ncol=hAggr[1]) # Organised as column per year 
+}
+```
+
+Next, we re/arrange the forecasts into a matrix. First comes the most aggregate, and the rest follow. 
+```{r}
+frcAll <- abind(frc,along=1)
+frcAll
+```
+Each column of frcAll corresponds to a period in the most temporally aggregate level, here the annual level. Rows contain the values for the forecasts at the various nodes of the hierarchy. 
+
+Now we estimate the G matrix that contains the combination weighs. We wil use here two easy approximations, the structural and the variance scaling. 
+```{r}
+# Structural:
+W <- diag(1/rowSums(S))
+Gstr <- solve(t(S)%*%W%*%S)%*%t(S)%*%W
+# Variance:
+mse <- unlist(mse)
+W <- diag(1/mse[rep((1:k),rev(AL))])
+Gvar <- solve(t(S)%*%W%*%S)%*%t(S)%*%W
+```
+Note that the caclulation of G is the same in both cases. It is only the W that is different. 
+
+Now we reconclile (combine) the forecasts. For this example we use the Structural scaling, but we only need to replace G to obtain any other result. 
+
+```{r}
+# Create the bottom level forecasts
+frcBRec <- Gstr %*% frcAll
+frcFinal <- as.numeric(frcBRec)[1:hrz]
+# We can also translate this into a time series object
+frcFinal <- ts(frcFinal,frequency=frequency(y),start=end(y)[1] + deltat(y)*end(y)[2])
+frcFinal
+ts.plot(y,frcFinal,col=c("black","red"))
+```
+
+Or we can use the S-matrix to generate the forecasts for the complete hierarchy
+
+```{r}
+frcARec <- S %*% frcBRec # Which has the same structure as frcAll
+```
+
+**Happy forecasting!**
